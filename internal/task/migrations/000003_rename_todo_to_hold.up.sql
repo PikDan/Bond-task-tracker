@@ -1,0 +1,1 @@
+ALTER TYPE task_status RENAME VALUE 'TODO' TO 'HOLD';

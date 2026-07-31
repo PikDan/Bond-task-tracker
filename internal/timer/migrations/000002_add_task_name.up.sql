@@ -1,0 +1,1 @@
+ALTER TABLE time_entries ADD COLUMN task_name TEXT NOT NULL DEFAULT '';

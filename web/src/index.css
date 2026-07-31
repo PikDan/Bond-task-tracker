@@ -1,0 +1,210 @@
+@import "tailwindcss";
+
+body {
+  min-height: 100vh;
+}
+
+/* Dark theme for react-day-picker. Muted slate accent (not a bright blue) so
+   today's highlighting blends into the dark theme instead of drawing
+   attention.
+
+   NOTE: react-day-picker's own stylesheet re-declares every one of these
+   custom properties directly on `.rdp-root` (the div DayPicker renders for
+   itself, a CHILD of our `.rdp-dark` wrapper) with hardcoded defaults like
+   `blue`/`#f0f0ff`. Setting the variables on `.rdp-dark` alone is therefore
+   silently shadowed — inheritance never kicks in because `.rdp-root`
+   redeclares the same properties on itself. Targeting `.rdp-dark .rdp-root`
+   (higher specificity than the bare `.rdp-root` rule) is what actually wins. */
+.rdp-dark .rdp-root {
+  --rdp-accent-color: #475569;
+  --rdp-accent-background-color: #33415580;
+  --rdp-range_middle-background-color: rgba(17, 172, 176, 0.25);
+  --rdp-day-height: 2.5rem;
+  --rdp-day-width: 2.5rem;
+}
+
+.rdp-dark {
+  color-scheme: dark;
+  color: #e5e5e5;
+}
+
+/* Every day number uses the same font regardless of selected state — the
+   default stylesheet bumps `.rdp-selected` to bold/large via inheritance;
+   setting font explicitly on the button itself (rather than relying on
+   inheritance) beats that unconditionally for every day, selected or not. */
+.rdp-dark .rdp-day_button {
+  font-size: 0.875rem;
+  font-weight: 400;
+}
+
+/* Month-nav chevrons: brand blue, lighter on hover. Scoped to `.rdp-nav` so
+   only the Previous/Next month buttons are affected. */
+.rdp-dark .rdp-nav .rdp-chevron {
+  fill: rgb(21, 93, 252);
+}
+
+.rdp-dark .rdp-button_previous:hover .rdp-chevron,
+.rdp-dark .rdp-button_next:hover .rdp-chevron {
+  fill: rgb(91, 142, 253);
+}
+
+/* Each week reads as one continuous rounded bar instead of separate square
+   cells. `border-collapse: collapse` (the library's default) makes browsers
+   ignore border-radius on <td> entirely — `separate` is what lets radius
+   render. Spacing is zero horizontally (days within a row stay flush, so
+   same-colored neighbors fuse into one bar) but non-zero vertically (so
+   each week's bar reads as its own row instead of fusing into the next). */
+/* The library caps its own total width at `max-content` via
+   `.rdp-months { max-width: fit-content }`, and `.rdp-month` (a flex item
+   with no width of its own) shrink-wraps to the grid's natural size — both
+   need to give up that shrink-wrapping before `width: 100%` on the grid
+   below has anything wider to stretch into. */
+.rdp-dark .rdp-months,
+.rdp-dark .rdp-month {
+  width: 100%;
+  max-width: none;
+}
+
+.rdp-dark .rdp-month_grid {
+  border-collapse: separate;
+  border-spacing: 0 0.25rem;
+  width: 100%;
+  table-layout: fixed;
+}
+
+/* Every day belonging to the displayed month shares the same background —
+   contiguous same-colored cells read as a single pill spanning the row.
+   Days from the previous/next month (shown dim, see below) are excluded. */
+.rdp-dark .rdp-day:not(.rdp-outside) {
+  background-color: var(--rdp-accent-background-color);
+}
+
+/* Round the pill's outer edges: the actual edge of the row, or wherever a
+   run of in-month days meets an outside-month day mid-row (first/last week
+   of the month, which rarely start/end exactly on a row boundary). */
+.rdp-dark .rdp-day:not(.rdp-outside):first-child,
+.rdp-dark .rdp-day.rdp-outside + .rdp-day:not(.rdp-outside) {
+  border-top-left-radius: 9999px;
+  border-bottom-left-radius: 9999px;
+}
+
+.rdp-dark .rdp-day:not(.rdp-outside):last-child,
+.rdp-dark .rdp-day:not(.rdp-outside):has(+ .rdp-day.rdp-outside) {
+  border-top-right-radius: 9999px;
+  border-bottom-right-radius: 9999px;
+}
+
+/* Outside-month days: no pill, dimmed text, not really interactive-looking. */
+.rdp-dark .rdp-outside {
+  opacity: 0.35;
+}
+
+.rdp-dark .rdp-outside .rdp-day_button {
+  cursor: default;
+}
+
+/* The day button no longer draws its own circle — the <td> already carries
+   the row's pill background, so the button just fills the cell. Selection
+   and "today" are called out with their own smaller chip below instead.
+
+   `inline-flex` (not the library default `flex`) is what keeps the number
+   centered: an inline-level box responds to the <td>'s own `text-align:
+   center` (set by the library's base stylesheet), so the number stays put
+   at the cell's true center regardless of whether THIS button is later
+   shrunk to a smaller chip size for a selected/range/today day — a
+   block-level `flex` box ignores the parent's text-align and would instead
+   sit flush at the cell's edge once its width no longer matches the cell,
+   visibly shifting the number and breaking column alignment with the days
+   above/below it.
+
+   NOTE: specificity is bumped via the extra `.rdp-day` ancestor so this
+   unconditionally beats the library's own per-modifier button rules
+   (`.rdp-selected .rdp-day_button`, `.rdp-range_middle .rdp-day_button`,
+   etc. — all 2 classes, same as a bare `.rdp-dark .rdp-day_button` would
+   be) regardless of whether react-day-picker's stylesheet or this file
+   ends up later in the final bundle — that tie would otherwise be decided
+   by import order alone, which isn't something to rely on. */
+.rdp-dark .rdp-day .rdp-day_button {
+  display: inline-flex;
+  width: 100%;
+  height: 100%;
+  border-radius: 9999px;
+  background: none;
+  border: none;
+}
+
+/* Selected range: a brighter sub-pill layered on top of the month's base
+   pill, using the same teal already reserved for range selection. Rounded
+   at the true start/end of the selection, or at a row boundary if the
+   range spans multiple weeks.
+
+   NOTE 1: needs the extra `.rdp-day` to match the base month-pill rule's
+   specificity above (`.rdp-day:not(.rdp-outside)`, 3 classes) — `.rdp-dark
+   .rdp-range_middle` alone is only 2 classes and would silently lose the
+   background-color tug-of-war regardless of source order.
+
+   NOTE 2: must be the `background` SHORTHAND, not just `background-color`.
+   react-day-picker's own stylesheet paints `.rdp-range_start`/`.rdp-range_end`
+   with a 50/50 transparent→color gradient `background-image` (meant to fade
+   the ribbon into their neighboring range_middle cell in the *original*,
+   un-reskinned design). Overriding only `background-color` leaves that
+   gradient image sitting on top, uncovered — its colored half is a *dimmer*
+   teal than ours (`--rdp-range_middle-background-color` before we
+   repurposed it), which shows up as a visibly different-shaded rectangle
+   over the inner half of the start/end cell instead of a flat fill. The
+   shorthand resets background-image to none along with setting the color. */
+.rdp-dark .rdp-day.rdp-range_start,
+.rdp-dark .rdp-day.rdp-range_middle,
+.rdp-dark .rdp-day.rdp-range_end {
+  background: rgba(17, 172, 176, 0.45);
+}
+
+.rdp-dark .rdp-range_start,
+.rdp-dark .rdp-range_middle:first-child {
+  border-top-left-radius: 9999px;
+  border-bottom-left-radius: 9999px;
+}
+
+.rdp-dark .rdp-range_end,
+.rdp-dark .rdp-range_middle:last-child {
+  border-top-right-radius: 9999px;
+  border-bottom-right-radius: 9999px;
+}
+
+/* Range endpoints: a ring drawn ON TOP of the continuous teal pill, not a
+   solid shape of its own — the teal fill keeps running underneath the ring
+   at full size, all the way to the pill's rounded cap, so the selection
+   reads as one continuous shape with an accent ring on it, rather than a
+   disconnected circle sitting next to a rectangle. */
+.rdp-dark .rdp-range_start .rdp-day_button,
+.rdp-dark .rdp-range_end .rdp-day_button {
+  width: 2rem;
+  height: 2rem;
+  background-color: transparent;
+  border: 2px solid rgb(21, 93, 252);
+  color: #e5e5e5;
+}
+
+/* A lone picked day before a range is completed (only "from" chosen, no
+   "to" yet) has no pill to blend into, so it's fine as a standalone solid
+   chip — same blue the app already uses for selection elsewhere. */
+.rdp-dark .rdp-selected:not(.rdp-range_start):not(.rdp-range_end):not(.rdp-range_middle) .rdp-day_button {
+  width: 2rem;
+  height: 2rem;
+  background-color: rgb(21, 93, 252);
+  border: none;
+  color: #e5e5e5;
+}
+
+/* Today, when it isn't itself part of the selection: a dimmer version of
+   the same accent chip, so it reads as "today" without competing with an
+   actual selection. */
+.rdp-dark
+  .rdp-today:not(.rdp-selected):not(.rdp-range_start):not(.rdp-range_end):not(.rdp-range_middle):not(.rdp-outside)
+  .rdp-day_button {
+  width: 2rem;
+  height: 2rem;
+  background-color: rgba(21, 93, 252, 0.35);
+  border: none;
+  color: #e5e5e5;
+}

@@ -1,0 +1,483 @@
+openapi: 3.0.3
+info:
+  title: Time Tracker API
+  version: "1.0.0"
+  description: |
+    My time tracker
+servers:
+  - url: http://localhost:8080
+    description: API Gateway (docker compose)
+security:
+  - UserId: []
+tags:
+  - name: Health
+  - name: Projects
+  - name: Tasks
+  - name: Timer
+
+paths:
+  /healthz:
+    get:
+      tags: [Health]
+      summary: Gateway health check
+      security: []
+      responses:
+        "200":
+          description: Gateway is up
+          content:
+            text/plain:
+              schema: { type: string, example: ok }
+
+  /api/projects:
+    post:
+      tags: [Projects]
+      summary: Create a project
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, example: "My project" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+    get:
+      tags: [Projects]
+      summary: List my projects
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Project" }
+
+  /api/projects/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [Projects]
+      summary: Get a project
+      description: Returns 404 if the project doesn't exist *or* belongs to a different user.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Projects]
+      summary: Rename a project
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, example: "Renamed project" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Projects]
+      summary: Delete a project
+      description: >-
+        Does not cascade-delete tasks in task_db (physically separate
+        database, no FK) — a known, accepted gap for now.
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/tasks:
+    post:
+      tags: [Tasks]
+      summary: Create a task
+      description: >-
+        project_id and title are both optional — a task can be created with
+        neither (time tracking still works on it). When project_id is
+        provided, it's validated against Project Service before creating.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                project_id: { type: string, format: uuid, nullable: true }
+                title: { type: string, example: "Fix login bug" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "400":
+          description: Invalid title, or project_id doesn't exist / isn't yours
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    get:
+      tags: [Tasks]
+      summary: List my tasks
+      parameters:
+        - name: project_id
+          in: query
+          required: false
+          description: Filter by project
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Task" }
+
+  /api/tasks/{id}:
+    parameters:
+      - $ref: "#/components/parameters/TaskId"
+    get:
+      tags: [Tasks]
+      summary: Get a task
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Tasks]
+      summary: Update a task's title, status, tags and/or project
+      description: >-
+        tags fully replaces the tag list when provided (trimmed, deduped,
+        empty strings dropped) — it's not a merge/append. project_id can be
+        set to a uuid to reassign the task to a project (re-validated against
+        Project Service). To clear the project back to none, send
+        project_id as an empty string ("") — sending JSON null has the same
+        effect as omitting the field entirely (both decode to "don't touch"
+        on the server), so null does NOT clear it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                status: { $ref: "#/components/schemas/TaskStatus" }
+                tags:
+                  type: array
+                  items: { type: string }
+                  example: ["urgent", "bug"]
+                project_id: { type: string, format: uuid, nullable: true }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Tasks]
+      summary: Delete a task
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/timers/start:
+    post:
+      tags: [Timer]
+      summary: Start a timer
+      description: >-
+        Validates task_id against Task Service, fails with 409 if this user
+        already has an active timer, and auto-transitions the task to
+        IN_PROGRESS if it wasn't already.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [task_id]
+              properties:
+                task_id: { type: string, format: uuid }
+                description: { type: string, example: "working" }
+      responses:
+        "201":
+          description: Timer started
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TimeEntry" }
+        "400":
+          description: task_id missing, or task doesn't exist / isn't yours
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: An active timer already exists for this user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/timers/stop:
+    post:
+      tags: [Timer]
+      summary: Stop the active timer
+      description: >-
+        task_id must match the task of the currently active timer — this
+        guards against a stale client accidentally stopping a different
+        task's timer than the one it thinks is running. Also auto-transitions
+        the task to HOLD (symmetric to the IN_PROGRESS transition on start).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [task_id]
+              properties:
+                task_id: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Timer stopped, duration_seconds computed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TimeEntry" }
+        "400":
+          description: task_id missing
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: No active timer for this user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Active timer belongs to a different task
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/timers/active:
+    get:
+      tags: [Timer]
+      summary: Get the currently active timer
+      description: duration_seconds is computed live (elapsed so far), not read from storage.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TimeEntry" }
+        "404":
+          description: No active timer for this user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/time-entries:
+    get:
+      tags: [Timer]
+      summary: List my time entries (history)
+      parameters:
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: task_id
+          in: query
+          required: false
+          description: Filter to entries belonging to a single task
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/TimeEntry" }
+
+  /api/time-entries/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Timer]
+      summary: Get a single time entry
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TimeEntry" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Timer]
+      summary: Manually correct started_at/ended_at, and/or reassign to another task
+      description: >-
+        Lets the user fix the time range of any entry they own (active or
+        already stopped) — moving it to a different day, or adjusting the
+        hour/minute on the same day. Providing ended_at on a still-active
+        entry closes it out at that chosen time. Overlaps with other entries
+        aren't rejected — the frontend flags them visually instead. Providing
+        task_id reassigns the entry to a different task (used by bulk-edit
+        split/merge flows), re-fetching and overwriting the entry's
+        denormalized task_name/project_id from the target task.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                started_at: { type: string, format: date-time }
+                ended_at: { type: string, format: date-time }
+                task_id: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TimeEntry" }
+        "400":
+          description: Invalid date format, or ended_at not after started_at
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Timer]
+      summary: Delete a time entry
+      description: >-
+        Works on any entry the user owns, including the currently active
+        (still-running) one — removing it can only decrease the number of
+        open entries for this user, never violate the one-active-timer rule.
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+components:
+  securitySchemes:
+    UserId:
+      type: apiKey
+      in: header
+      name: X-User-Id
+      description: Stand-in for auth until JWT exists. Required on every /api/* request.
+
+  parameters:
+    ProjectId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    TaskId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Not found (or belongs to a different user)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+
+    TaskStatus:
+      type: string
+      enum: [HOLD, IN_PROGRESS, DONE]
+
+    Project:
+      type: object
+      required: [id, user_id, name, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string }
+        name: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Task:
+      type: object
+      required: [id, project_id, user_id, title, status, tags, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid, nullable: true }
+        user_id: { type: string }
+        title: { type: string }
+        status: { $ref: "#/components/schemas/TaskStatus" }
+        tags:
+          type: array
+          items: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    TimeEntry:
+      type: object
+      required:
+        [
+          id,
+          user_id,
+          task_id,
+          task_name,
+          project_id,
+          description,
+          started_at,
+          ended_at,
+          duration_seconds,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string }
+        task_id: { type: string, format: uuid }
+        task_name: { type: string }
+        project_id: { type: string, format: uuid, nullable: true }
+        description: { type: string }
+        started_at: { type: string, format: date-time }
+        ended_at:
+          type: string
+          format: date-time
+          nullable: true
+        duration_seconds:
+          type: integer
+          format: int64
+          nullable: true

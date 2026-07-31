@@ -1,0 +1,131 @@
+services:
+  project-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: project_db
+      POSTGRES_USER: project
+      POSTGRES_PASSWORD: project
+    ports:
+      - "5433:5432"
+    volumes:
+      - project_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U project -d project_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  task-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: task_db
+      POSTGRES_USER: task
+      POSTGRES_PASSWORD: task
+    ports:
+      - "5434:5432"
+    volumes:
+      - task_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U task -d task_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  timer-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: timer_db
+      POSTGRES_USER: timer
+      POSTGRES_PASSWORD: timer
+    ports:
+      - "5435:5432"
+    volumes:
+      - timer_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U timer -d timer_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  project-service:
+    build:
+      context: .
+      dockerfile: deploy/project-service.Dockerfile
+    environment:
+      DATABASE_URL: postgres://project:project@project-db:5432/project_db?sslmode=disable
+      PORT: "8081"
+    depends_on:
+      project-db:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+
+  task-service:
+    build:
+      context: .
+      dockerfile: deploy/task-service.Dockerfile
+    environment:
+      DATABASE_URL: postgres://task:task@task-db:5432/task_db?sslmode=disable
+      PORT: "8082"
+      PROJECT_SERVICE_URL: http://project-service:8081
+    depends_on:
+      task-db:
+        condition: service_healthy
+      project-service:
+        condition: service_started
+    ports:
+      - "8082:8082"
+
+  timer-service:
+    build:
+      context: .
+      dockerfile: deploy/timer-service.Dockerfile
+    environment:
+      DATABASE_URL: postgres://timer:timer@timer-db:5432/timer_db?sslmode=disable
+      PORT: "8083"
+      TASK_SERVICE_URL: http://task-service:8082
+    depends_on:
+      timer-db:
+        condition: service_healthy
+      task-service:
+        condition: service_started
+    ports:
+      - "8083:8083"
+
+  gateway:
+    build:
+      context: .
+      dockerfile: deploy/gateway.Dockerfile
+    environment:
+      PORT: "8080"
+      PROJECT_SERVICE_URL: http://project-service:8081
+      TASK_SERVICE_URL: http://task-service:8082
+      TIMER_SERVICE_URL: http://timer-service:8083
+      # localhost:5173 is what a real browser on the host uses; web:5173 is
+      # only for automated/headless testing that runs inside the compose
+      # network instead of on the host (e.g. a Playwright container).
+      CORS_ALLOWED_ORIGINS: http://localhost:5173,http://web:5173
+    depends_on:
+      - project-service
+      - task-service
+      - timer-service
+    ports:
+      - "8080:8080"
+
+  web:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ./web:/app
+      - web_node_modules:/app/node_modules
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    ports:
+      - "5173:5173"
+    depends_on:
+      - gateway
+
+volumes:
+  project_db_data:
+  task_db_data:
+  timer_db_data:
+  web_node_modules:
