@@ -1,34 +1,286 @@
-# Tracker
+<div align="center">
 
-A personal time-tracking app (Toggl-style): start/stop timers on tasks, organize them into projects and tags, and analyze the time you've logged in a Reports section (summary charts + a detailed, filterable entries table).
+# ⏱️ Bond Task Tracker
 
-## Stack
+**Командный тайм-трекер задач в духе Toggl.**
+Запускай таймер на задаче, раскладывай работу по проектам и тегам, смотри отчёты по потраченному времени — в одиночку или командой с ролями и правами доступа.
 
-- **Backend** — Go, split into small services behind a gateway:
-  - `gateway` — routes requests to the services below, handles CORS.
-  - `project-service`, `task-service`, `timer-service` — each owns its own Postgres database.
-- **Frontend** — React + TypeScript + Vite, styled with Tailwind CSS, data fetching via TanStack Query (hooks generated from the API schema with Orval).
+![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)
+![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker_Compose-ready-2496ED?logo=docker&logoColor=white)
+![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-4-06B6D4?logo=tailwindcss&logoColor=white)
 
-## Running locally
+</div>
 
-The whole stack (3 Postgres databases, 4 Go services, and the Vite dev server) comes up with one command:
+<!-- Скриншот интерфейса: положите картинку в docs/screenshot.png и раскомментируйте строку ниже
+![Интерфейс](docs/screenshot.png)
+-->
+
+## Содержание
+
+- [О проекте](#-о-проекте)
+- [Возможности](#-возможности)
+- [Роли и права доступа](#-роли-и-права-доступа)
+- [Архитектура](#-архитектура)
+- [Стек](#-стек)
+- [Быстрый старт](#-быстрый-старт)
+- [Разработка](#-разработка)
+- [API](#-api)
+- [Структура репозитория](#-структура-репозитория)
+- [Текущие ограничения и планы](#-текущие-ограничения-и-планы)
+
+## 📌 О проекте
+
+Bond Task Tracker — веб-приложение для учёта рабочего времени. Пользователь создаёт задачи, запускает и останавливает по ним таймер, а приложение собирает из этих сессий историю и аналитику: сколько времени ушло на какой проект, задачу или тег, за день, неделю или месяц.
+
+Проект задуман как **командный**: пользователи объединяются в организации и рабочие пространства (workspaces), у каждого есть роль, а от роли зависит, что человек видит и что может менять.
+
+Бэкенд построен на **микросервисах на Go** (у каждого сервиса своя база PostgreSQL) за единым **API Gateway**. Фронтенд — SPA на **React + TypeScript**. Весь стек поднимается одной командой через Docker Compose.
+
+## ✨ Возможности
+
+### Таймер и задачи
+
+- **Старт / стоп таймера** на задаче одним кликом; текущий таймер отображается в верхней панели и тикает в реальном времени.
+- **Один активный таймер на пользователя.** Это гарантирует сама база данных (partial unique index), поэтому даже два одновременных запроса не запустят второй таймер.
+- **Автоматические статусы задач:** при старте таймера задача переходит в `IN_PROGRESS`, при остановке — в `HOLD`. Можно вручную поставить `DONE`.
+- **Задачи без проекта**: проект указывать не обязательно, задачу можно привязать к нему позже.
+- **Теги** у задач, фильтрация по тегам.
+- **Лента записей по дням**: сессии сгруппированы по задачам внутри дня, для каждого дня посчитано итоговое время.
+- **Ручное редактирование времени**: можно поправить начало и конец сессии или закрыть активный таймер задним числом.
+- **Подсветка пересечений**: если сессии пересекаются по времени, они помечаются одним цветом (группы считаются через union-find).
+- **Массовые действия**: выделить несколько записей, чтобы удалить их или отредактировать группой. При групповом редактировании записи из разных задач можно слить в одну новую задачу, а опустевшие задачи удаляются автоматически.
+- **Быстрые фильтры**: поиск по названию задачи, по проекту и по тегам, плюс выбор периода («Сегодня», «Вчера», «Эта неделя», «Прошлая неделя» или произвольный диапазон в календаре).
+
+### Отчёты (Reports)
+
+**Summary**:
+- карточки со статистикой: общее время и среднее за день;
+- столбчатая диаграмма по дням, неделям или месяцам (масштаб подбирается под длину периода) с разбивкой **Stack by** по проектам, задачам или тегам;
+- кольцевая диаграмма распределения времени и таблица breakdown с разбивкой **Slice by**;
+- активный таймер учитывается в цифрах в реальном времени.
+
+**Detailed**:
+- подробная таблица всех записей времени с фильтрами по периоду, проекту, задаче и тегам;
+- ручное добавление записи «задним числом»;
+- редактирование, массовое удаление и групповое редактирование прямо из таблицы.
+
+Диаграммы написаны на чистом SVG, без библиотек для графиков.
+
+### Проекты
+
+- Создание, переименование и удаление проектов, у каждого проекта свой цвет.
+- **Участники проекта** с ролями `LEAD` и `MEMBER`. Project Lead получает расширенные права, но только внутри своего проекта.
+
+### Организации, рабочие пространства, участники
+
+- **Организация → рабочие пространства → проекты → задачи → записи времени.**
+- При первом входе пользователю автоматически создаются личная организация и рабочее пространство по умолчанию.
+- Переключатель рабочих пространств в шапке приложения.
+- Приглашение участников в организацию, управление участниками рабочего пространства и их ролями.
+- Создание, переименование и удаление рабочих пространств.
+- **Передача владения организацией.** Владелец у организации всегда ровно один, и это тоже гарантирует база.
+
+## 🔐 Роли и права доступа
+
+| Действие | Member | Project Lead¹ | Workspace Admin | Org Admin | Org Owner |
+|---|:---:|:---:|:---:|:---:|:---:|
+| Запускать и останавливать свой таймер, создавать задачи, ставить теги | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Редактировать и удалять свои задачи и записи времени | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Редактировать и удалять **чужие** задачи и записи времени | — | в своём проекте | ✅ | ✅ | ✅ |
+| Видеть все задачи и записи времени воркспейса | — | — | ✅ | ✅ | ✅ |
+| Переименовывать проект | — | свой проект | ✅ | ✅ | ✅ |
+| Создавать и удалять проекты, назначать Project Lead | — | — | ✅ | ✅ | ✅ |
+| Управлять воркспейсом и его участниками | — | — | ✅ | ✅ | ✅ |
+| Создавать воркспейсы, приглашать в организацию | — | — | — | ✅ | ✅ |
+| Передавать владение организацией | — | — | — | — | ✅ |
+
+¹ Project Lead — роль на уровне конкретного проекта, а не всего воркспейса. Обычный Member может быть Lead'ом в одном проекте и рядовым участником в другом.
+
+Все правила «кто что может» собраны в одном месте, в пакете [`pkg/rbac`](pkg/rbac/rbac.go), и одинаково применяются во всех сервисах.
+
+## 🏗 Архитектура
+
+```mermaid
+flowchart LR
+    B([Браузер]) --> WEB["Web SPA<br/>React + Vite<br/>:5173"]
+    WEB -->|"REST /api/*"| GW["API Gateway<br/>:8080"]
+
+    GW --> WS["workspace-service<br/>:8084"]
+    GW --> PS["project-service<br/>:8081"]
+    GW --> TS["task-service<br/>:8082"]
+    GW --> TM["timer-service<br/>:8083"]
+
+    PS -. "роль в воркспейсе" .-> WS
+    TS -. "роль в воркспейсе" .-> WS
+    TM -. "роль в воркспейсе" .-> WS
+    TS -. "проект, Lead" .-> PS
+    TM -. "проект, Lead" .-> PS
+    TM -. "задача, смена статуса" .-> TS
+
+    WS --- WSDB[("workspace_db")]
+    PS --- PSDB[("project_db")]
+    TS --- TSDB[("task_db")]
+    TM --- TMDB[("timer_db")]
+```
+
+| Сервис | Порт | За что отвечает |
+|---|---|---|
+| `gateway` | 8080 | Единая точка входа: маршрутизация `/api/*` по сервисам, CORS, Swagger UI |
+| `workspace-service` | 8084 | Организации, рабочие пространства, членство, вычисление роли пользователя |
+| `project-service` | 8081 | Проекты и участники проектов (Project Lead) |
+| `task-service` | 8082 | Задачи, статусы, теги |
+| `timer-service` | 8083 | Таймеры и записи времени (time entries) |
+
+### Ключевые решения
+
+- **Database per service.** У каждого сервиса своя база PostgreSQL, и в чужие базы сервисы не ходят. Данными обмениваются только через HTTP API.
+- **API Gateway** без бизнес-логики: он только проксирует запросы (`/api/projects/123` → `project-service /projects/123`) и обрабатывает CORS. Именно сюда позже встанет проверка JWT.
+- **Contract-first API.** Спецификация [`openapi.yaml`](internal/gateway/openapi.yaml) — единственный источник правды. Gateway раздаёт по ней Swagger UI, а фронтенд генерирует из неё типизированный клиент и React Query хуки через **Orval**.
+- **Чистая слоистая структура** в каждом сервисе: `handler` (HTTP) → `service` (бизнес-логика и права) → `repository` (SQL).
+- **Инварианты на уровне базы, а не только в коде:** один активный таймер на пользователя, один владелец на организацию, один воркспейс по умолчанию на организацию. Всё это сделано через partial unique index, поэтому гонки запросов не могут нарушить правила.
+- **Авторизация в одном месте.** Каждый сервис узнаёт роль пользователя через `workspace-service` (`/workspace-access`), а решение «можно или нельзя» принимает общий пакет `pkg/rbac`.
+- **Денормализация там, где она оправдана:** запись времени хранит копии `task_name`, `project_id` и `workspace_id`, чтобы отчёты строились без межсервисных запросов на каждую строку.
+- **Встроенные миграции.** SQL-миграции вшиты в бинарник (`go:embed` + `golang-migrate`) и накатываются автоматически при старте сервиса.
+- **Безопасный переход на воркспейсы.** Отдельная идемпотентная утилита [`cmd/backfill-workspaces`](cmd/backfill-workspaces/main.go) проставляет `workspace_id` данным, созданным до появления воркспейсов. Её можно безопасно запускать повторно.
+- **Multi-stage Docker-образы:** Go-сервисы собираются в статические бинарники на `alpine`.
+
+## 🧰 Стек
+
+| Слой | Технологии |
+|---|---|
+| **Backend** | Go 1.25, [chi](https://github.com/go-chi/chi) (роутинг), [pgx v5](https://github.com/jackc/pgx) (драйвер PostgreSQL), [golang-migrate](https://github.com/golang-migrate/migrate) (миграции), `log/slog` (логирование) |
+| **База данных** | PostgreSQL 16, отдельная база на каждый сервис |
+| **Frontend** | React 18, TypeScript 5, Vite 5, Tailwind CSS 4 |
+| **Данные на фронте** | TanStack Query 5, axios, клиент сгенерирован [Orval](https://orval.dev) из OpenAPI |
+| **UI** | lucide-react (иконки), react-day-picker (календарь), date-fns (работа с датами), диаграммы на SVG |
+| **Документация API** | OpenAPI 3 + Swagger UI, коллекция Postman |
+| **Инфраструктура** | Docker, Docker Compose |
+
+## 🚀 Быстрый старт
+
+**Нужно:** [Docker](https://www.docker.com/) с Docker Compose.
 
 ```bash
-docker compose up
+git clone https://github.com/PikDan/Bond-task-tracker.git
+cd Bond-task-tracker
+docker compose up --build
 ```
 
-- Frontend: [http://localhost:5173](http://localhost:5173)
-- API gateway: [http://localhost:8080](http://localhost:8080)
+Эта команда поднимет 4 базы PostgreSQL, 5 Go-сервисов и dev-сервер фронтенда.
 
-To run a single Go service directly on your host instead (against the same Dockerized databases), see `.env.example` for the env vars each service expects.
+| Что | Адрес |
+|---|---|
+| 🖥 Приложение | http://localhost:5173 |
+| 🔌 API Gateway | http://localhost:8080 |
+| 📖 Swagger UI | http://localhost:8080/docs |
+| 📄 OpenAPI-спецификация | http://localhost:8080/openapi.yaml |
+| ❤️ Health check | http://localhost:8080/healthz |
 
-## Project layout
+> **Первый вход.** Настоящей авторизации пока нет. При открытии приложения введите любой идентификатор пользователя, например `alice`. Чтобы посмотреть, как работают роли, переключитесь на другого пользователя через переключатель в шапке.
+
+## 🛠 Разработка
+
+### Запустить один сервис локально, без Docker
+
+Базы при этом остаются в Docker и доступны на `localhost:5433–5436`. Нужные переменные окружения для каждого сервиса перечислены в [`.env.example`](.env.example).
+
+```bash
+docker compose up -d project-db task-db timer-db workspace-db
+
+# пример для task-service (переменные — из .env.example)
+DATABASE_URL=postgres://task:task@localhost:5434/task_db?sslmode=disable \
+PORT=8082 \
+PROJECT_SERVICE_URL=http://localhost:8081 \
+WORKSPACE_SERVICE_URL=http://localhost:8084 \
+go run ./cmd/task-service
+```
+
+### Фронтенд
+
+```bash
+cd web
+npm install
+npm run dev            # dev-сервер на :5173
+npm run build          # production-сборка
+npm run generate:api   # перегенерировать src/api/generated.ts из openapi.yaml
+```
+
+> Если меняете API, сначала обновите [`internal/gateway/openapi.yaml`](internal/gateway/openapi.yaml), потом запустите `npm run generate:api`. Типы и хуки на фронтенде обновятся автоматически.
+
+### Ручное тестирование API
+
+В [`postman/tracker.postman_collection.json`](postman/tracker.postman_collection.json) лежит коллекция Postman со всеми запросами. Во всех запросах нужен заголовок `X-User-Id`, а `X-Workspace-Id` передаётся по желанию.
+
+## 🔌 API
+
+Все запросы идут через Gateway с префиксом `/api`. Полное описание — в Swagger UI на `/docs`.
+
+| Ресурс | Эндпоинты |
+|---|---|
+| **Доступ** | `GET /api/workspace-access` — текущий воркспейс и роль пользователя |
+| **Организации** | `GET/POST /api/organizations`, `GET/PATCH/DELETE /api/organizations/{id}`, `POST /api/organizations/{id}/transfer-owner`, `GET/POST /api/organizations/{id}/members`, `DELETE /api/organizations/{id}/members/{userId}` |
+| **Воркспейсы** | `GET/POST /api/workspaces`, `GET/PATCH/DELETE /api/workspaces/{id}`, `GET/POST /api/workspaces/{id}/members`, `PATCH/DELETE /api/workspaces/{id}/members/{userId}` |
+| **Проекты** | `GET/POST /api/projects`, `GET/PATCH/DELETE /api/projects/{id}`, `GET/POST /api/projects/{id}/members`, `PATCH/DELETE /api/projects/{id}/members/{userId}` |
+| **Задачи** | `GET/POST /api/tasks`, `GET/PATCH/DELETE /api/tasks/{id}` |
+| **Таймер** | `POST /api/timers/start`, `POST /api/timers/stop`, `GET /api/timers/active` |
+| **Записи времени** | `GET /api/time-entries`, `GET/PATCH/DELETE /api/time-entries/{id}` |
+
+## 📁 Структура репозитория
 
 ```
-cmd/            entry points for each Go service (gateway, project/task/timer-service)
-internal/       per-service implementation (handler, service, repository, migrations)
-pkg/            shared Go packages (config, db helpers, HTTP helpers)
-web/            React frontend
-deploy/         Dockerfiles for each service
-postman/        Postman collection for manually exercising the API
+.
+├── cmd/                        # точки входа (main.go) каждого бинарника
+│   ├── gateway/
+│   ├── workspace-service/
+│   ├── project-service/
+│   ├── task-service/
+│   ├── timer-service/
+│   └── backfill-workspaces/    # одноразовая утилита миграции данных
+├── internal/                   # код сервисов
+│   ├── gateway/                # прокси, openapi.yaml, Swagger UI
+│   └── <service>/              # handler → service → repository, migrations/, клиенты к соседним сервисам
+├── pkg/                        # общие пакеты
+│   ├── config/                 # чтение переменных окружения
+│   ├── dbx/                    # пул подключений к PostgreSQL
+│   ├── httpx/                  # JSON-ответы, ошибки, контекст пользователя
+│   └── rbac/                   # роли и правила доступа
+├── web/                        # фронтенд (React + TS + Vite)
+│   └── src/
+│       ├── api/                # сгенерированный клиент + axios-инстанс
+│       ├── views/              # экраны: Timer, Reports, Projects, Members
+│       ├── components/         # UI-компоненты, модалки, диаграммы
+│       ├── context/            # пользователь, воркспейс, уведомления
+│       ├── hooks/              # активный таймер, живой счётчик и т.д.
+│       └── utils/              # агрегация отчётов, пересечения, форматирование
+├── deploy/                     # Dockerfile для каждого сервиса
+├── postman/                    # коллекция Postman
+└── docker-compose.yml
 ```
+
+## 🧭 Текущие ограничения и планы
+
+Проект в активной разработке. Что пока работает не так, как в продакшене:
+
+- **Аутентификации нет.** Пользователь передаётся заголовком `X-User-Id` — это временная заглушка, сделанная так, что её можно заменить на JWT-middleware без изменений в обработчиках.
+- Пересечения записей времени только **подсвечиваются** на фронтенде, сервер их не запрещает.
+- В отчётах группировка **по участникам** пока отключена (Coming soon).
+
+**Roadmap:**
+
+- [ ] JWT-аутентификация в API Gateway
+- [ ] Группировка и фильтры по участникам в отчётах
+- [ ] Расширенная сортировка и фильтрация по тегам (по имени, по диапазону дат)
+- [ ] Unit- и интеграционные тесты
+- [ ] CI на GitHub Actions (сборка, линтеры, тесты)
+- [ ] Production-сборка фронтенда в Docker-образе
+
+---
+
+<div align="center">
+
+Автор — **Daniil Dushkov**
+
+</div>
