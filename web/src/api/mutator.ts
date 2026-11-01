@@ -13,9 +13,21 @@ export function setCurrentUserId(userId: string) {
   currentUserId = userId;
 }
 
+// X-Workspace-Id is optional — omitting it makes project/task/timer-service
+// fall back to the caller's lazily-provisioned default workspace. WorkspaceContext
+// calls setCurrentWorkspaceId() whenever the active workspace changes.
+let currentWorkspaceId = "";
+
+export function setCurrentWorkspaceId(workspaceId: string) {
+  currentWorkspaceId = workspaceId;
+}
+
 axiosInstance.interceptors.request.use((config) => {
   if (currentUserId) {
     config.headers.set("X-User-Id", currentUserId);
+  }
+  if (currentWorkspaceId) {
+    config.headers.set("X-Workspace-Id", currentWorkspaceId);
   }
   return config;
 });

@@ -40,12 +40,40 @@ export const TaskStatus = {
   DONE: 'DONE',
 } as const;
 
+export type ProjectRole = typeof ProjectRole[keyof typeof ProjectRole];
+
+
+// eslint-disable-next-line @typescript-eslint/no-redeclare
+export const ProjectRole = {
+  LEAD: 'LEAD',
+  MEMBER: 'MEMBER',
+} as const;
+
+/**
+ * The caller's own participant role in this project, or null if they aren't one.
+ * @nullable
+ */
+export type ProjectMyRole = ProjectRole | null;
+
 export interface Project {
   id: string;
   user_id: string;
   name: string;
   created_at: string;
   updated_at: string;
+  /**
+   * The caller's own participant role in this project, or null if they aren't one.
+   * @nullable
+   */
+  my_role?: ProjectMyRole;
+}
+
+export interface ProjectMembership {
+  id: string;
+  project_id: string;
+  user_id: string;
+  role: ProjectRole;
+  created_at: string;
 }
 
 export interface Task {
@@ -75,6 +103,73 @@ export interface TimeEntry {
   duration_seconds: number | null;
 }
 
+export type OrgRole = typeof OrgRole[keyof typeof OrgRole];
+
+
+// eslint-disable-next-line @typescript-eslint/no-redeclare
+export const OrgRole = {
+  OWNER: 'OWNER',
+  ADMIN: 'ADMIN',
+} as const;
+
+export type WorkspaceRole = typeof WorkspaceRole[keyof typeof WorkspaceRole];
+
+
+// eslint-disable-next-line @typescript-eslint/no-redeclare
+export const WorkspaceRole = {
+  ADMIN: 'ADMIN',
+  MEMBER: 'MEMBER',
+} as const;
+
+export interface Organization {
+  id: string;
+  name: string;
+  owner_user_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Workspace {
+  id: string;
+  org_id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OrgMembership {
+  id: string;
+  org_id: string;
+  user_id: string;
+  role: OrgRole;
+  created_at: string;
+}
+
+export interface WorkspaceMembership {
+  id: string;
+  workspace_id: string;
+  user_id: string;
+  role: WorkspaceRole;
+  created_at: string;
+}
+
+export type AccessRole = typeof AccessRole[keyof typeof AccessRole];
+
+
+// eslint-disable-next-line @typescript-eslint/no-redeclare
+export const AccessRole = {
+  OWNER: 'OWNER',
+  ADMIN: 'ADMIN',
+  WORKSPACE_ADMIN: 'WORKSPACE_ADMIN',
+  MEMBER: 'MEMBER',
+} as const;
+
+export interface Access {
+  workspace_id: string;
+  org_id: string;
+  role: AccessRole;
+}
+
 /**
  * Invalid request
  */
@@ -85,12 +180,26 @@ export type BadRequestResponse = Error;
  */
 export type NotFoundResponse = Error;
 
+/**
+ * Caller does not have the required role for this action
+ */
+export type ForbiddenResponse = Error;
+
 export type PostApiProjectsBody = {
   name: string;
 };
 
 export type PatchApiProjectsIdBody = {
   name: string;
+};
+
+export type PostApiProjectsIdMembersBody = {
+  user_id: string;
+  role?: ProjectRole;
+};
+
+export type PatchApiProjectsIdMembersUserIdBody = {
+  role: ProjectRole;
 };
 
 export type PostApiTasksBody = {
@@ -104,6 +213,10 @@ export type GetApiTasksParams = {
  * Filter by project
  */
 project_id?: string;
+/**
+ * When true, returns every task in the workspace instead of just the caller's own — only takes effect when the caller's resolved role is Owner/Admin/Workspace Admin; silently ignored for a plain Member (not an error).
+ */
+all?: boolean;
 };
 
 export type PatchApiTasksIdBody = {
@@ -130,12 +243,58 @@ to?: string;
  * Filter to entries belonging to a single task
  */
 task_id?: string;
+/**
+ * When true, returns every entry in the workspace instead of just the caller's own — only takes effect when the caller's resolved role is Owner/Admin/Workspace Admin; silently ignored for a plain Member (not an error).
+ */
+all?: boolean;
 };
 
 export type PatchApiTimeEntriesIdBody = {
   started_at?: string;
   ended_at?: string;
   task_id?: string;
+};
+
+export type GetApiWorkspaceAccessParams = {
+workspace_id?: string;
+};
+
+export type PostApiOrganizationsBody = {
+  name: string;
+};
+
+export type PatchApiOrganizationsIdBody = {
+  name: string;
+};
+
+export type PostApiOrganizationsIdTransferOwnerBody = {
+  to_user_id: string;
+};
+
+export type PostApiOrganizationsIdMembersBody = {
+  user_id: string;
+};
+
+export type PostApiWorkspacesBody = {
+  org_id: string;
+  name: string;
+};
+
+export type GetApiWorkspacesParams = {
+org_id: string;
+};
+
+export type PatchApiWorkspacesIdBody = {
+  name: string;
+};
+
+export type PostApiWorkspacesIdMembersBody = {
+  user_id: string;
+  role?: WorkspaceRole;
+};
+
+export type PatchApiWorkspacesIdMembersUserIdBody = {
+  role: WorkspaceRole;
 };
 
 /**
@@ -546,7 +705,7 @@ export const usePatchApiProjectsId = <TError = BadRequestResponse | NotFoundResp
     }
     
 /**
- * Does not cascade-delete tasks in task_db (physically separate database, no FK) — a known, accepted gap for now.
+ * Does not cascade-delete tasks in task_db (physically separate database, no FK) — a known, accepted gap for now. Requires Owner/Admin/Workspace Admin — a project's Lead cannot delete it.
  * @summary Delete a project
  */
 export const deleteApiProjectsId = (
@@ -604,6 +763,297 @@ export const useDeleteApiProjectsId = <TError = NotFoundResponse,
       > => {
 
       const mutationOptions = getDeleteApiProjectsIdMutationOptions(options);
+
+      return useMutation(mutationOptions, queryClient);
+    }
+    
+/**
+ * Requires Owner/Admin/Workspace Admin, or this project's own Lead. role defaults to MEMBER if omitted; requesting role=LEAD requires Owner/Admin/Workspace Admin specifically — a Lead adding a participant can never make them a co-Lead in the same call.
+ * @summary Add a project participant
+ */
+export const postApiProjectsIdMembers = (
+    id: string,
+    postApiProjectsIdMembersBody: PostApiProjectsIdMembersBody,
+ signal?: AbortSignal
+) => {
+      
+      
+      return customInstance<ProjectMembership>(
+      {url: `/api/projects/${id}/members`, method: 'POST',
+      headers: {'Content-Type': 'application/json', },
+      data: postApiProjectsIdMembersBody, signal
+    },
+      );
+    }
+  
+
+
+export const getPostApiProjectsIdMembersMutationOptions = <TError = BadRequestResponse | ForbiddenResponse | NotFoundResponse | Error,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postApiProjectsIdMembers>>, TError,{id: string;data: PostApiProjectsIdMembersBody}, TContext>, }
+): UseMutationOptions<Awaited<ReturnType<typeof postApiProjectsIdMembers>>, TError,{id: string;data: PostApiProjectsIdMembersBody}, TContext> => {
+
+const mutationKey = ['postApiProjectsIdMembers'];
+const {mutation: mutationOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }};
+
+      
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postApiProjectsIdMembers>>, {id: string;data: PostApiProjectsIdMembersBody}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  postApiProjectsIdMembers(id,data,)
+        }
+
+        
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostApiProjectsIdMembersMutationResult = NonNullable<Awaited<ReturnType<typeof postApiProjectsIdMembers>>>
+    export type PostApiProjectsIdMembersMutationBody = PostApiProjectsIdMembersBody
+    export type PostApiProjectsIdMembersMutationError = BadRequestResponse | ForbiddenResponse | NotFoundResponse | Error
+
+    /**
+ * @summary Add a project participant
+ */
+export const usePostApiProjectsIdMembers = <TError = BadRequestResponse | ForbiddenResponse | NotFoundResponse | Error,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postApiProjectsIdMembers>>, TError,{id: string;data: PostApiProjectsIdMembersBody}, TContext>, }
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postApiProjectsIdMembers>>,
+        TError,
+        {id: string;data: PostApiProjectsIdMembersBody},
+        TContext
+      > => {
+
+      const mutationOptions = getPostApiProjectsIdMembersMutationOptions(options);
+
+      return useMutation(mutationOptions, queryClient);
+    }
+    
+/**
+ * Requires the same visibility bar as GET /api/projects/{id} (owner, Owner/Admin/Workspace Admin, or this project's Lead).
+ * @summary List project participants
+ */
+export const getApiProjectsIdMembers = (
+    id: string,
+ signal?: AbortSignal
+) => {
+      
+      
+      return customInstance<ProjectMembership[]>(
+      {url: `/api/projects/${id}/members`, method: 'GET', signal
+    },
+      );
+    }
+  
+
+
+
+export const getGetApiProjectsIdMembersQueryKey = (id?: string,) => {
+    return [
+    `/api/projects/${id}/members`
+    ] as const;
+    }
+
+    
+export const getGetApiProjectsIdMembersQueryOptions = <TData = Awaited<ReturnType<typeof getApiProjectsIdMembers>>, TError = ForbiddenResponse | NotFoundResponse>(id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiProjectsIdMembers>>, TError, TData>>, }
+) => {
+
+const {query: queryOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetApiProjectsIdMembersQueryKey(id);
+
+  
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getApiProjectsIdMembers>>> = ({ signal }) => getApiProjectsIdMembers(id, signal);
+
+      
+
+      
+
+   return  { queryKey, queryFn, enabled: !!(id), ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getApiProjectsIdMembers>>, TError, TData> & { queryKey: DataTag<QueryKey, TData> }
+}
+
+export type GetApiProjectsIdMembersQueryResult = NonNullable<Awaited<ReturnType<typeof getApiProjectsIdMembers>>>
+export type GetApiProjectsIdMembersQueryError = ForbiddenResponse | NotFoundResponse
+
+
+export function useGetApiProjectsIdMembers<TData = Awaited<ReturnType<typeof getApiProjectsIdMembers>>, TError = ForbiddenResponse | NotFoundResponse>(
+ id: string, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiProjectsIdMembers>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getApiProjectsIdMembers>>,
+          TError,
+          Awaited<ReturnType<typeof getApiProjectsIdMembers>>
+        > , 'initialData'
+      >, }
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> }
+export function useGetApiProjectsIdMembers<TData = Awaited<ReturnType<typeof getApiProjectsIdMembers>>, TError = ForbiddenResponse | NotFoundResponse>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiProjectsIdMembers>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getApiProjectsIdMembers>>,
+          TError,
+          Awaited<ReturnType<typeof getApiProjectsIdMembers>>
+        > , 'initialData'
+      >, }
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> }
+export function useGetApiProjectsIdMembers<TData = Awaited<ReturnType<typeof getApiProjectsIdMembers>>, TError = ForbiddenResponse | NotFoundResponse>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiProjectsIdMembers>>, TError, TData>>, }
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> }
+/**
+ * @summary List project participants
+ */
+
+export function useGetApiProjectsIdMembers<TData = Awaited<ReturnType<typeof getApiProjectsIdMembers>>, TError = ForbiddenResponse | NotFoundResponse>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiProjectsIdMembers>>, TError, TData>>, }
+ , queryClient?: QueryClient 
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> } {
+
+  const queryOptions = getGetApiProjectsIdMembersQueryOptions(id,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> };
+
+  query.queryKey = queryOptions.queryKey ;
+
+  return query;
+}
+
+
+
+
+/**
+ * The only way to change who holds LEAD — requires Owner/Admin/Workspace Admin only, never the project's own Lead ("Workspace Admin assigns Lead").
+ * @summary Promote a participant to Lead, or demote a Lead to a plain participant
+ */
+export const patchApiProjectsIdMembersUserId = (
+    id: string,
+    userId: string,
+    patchApiProjectsIdMembersUserIdBody: PatchApiProjectsIdMembersUserIdBody,
+ ) => {
+      
+      
+      return customInstance<void>(
+      {url: `/api/projects/${id}/members/${userId}`, method: 'PATCH',
+      headers: {'Content-Type': 'application/json', },
+      data: patchApiProjectsIdMembersUserIdBody
+    },
+      );
+    }
+  
+
+
+export const getPatchApiProjectsIdMembersUserIdMutationOptions = <TError = BadRequestResponse | ForbiddenResponse | NotFoundResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof patchApiProjectsIdMembersUserId>>, TError,{id: string;userId: string;data: PatchApiProjectsIdMembersUserIdBody}, TContext>, }
+): UseMutationOptions<Awaited<ReturnType<typeof patchApiProjectsIdMembersUserId>>, TError,{id: string;userId: string;data: PatchApiProjectsIdMembersUserIdBody}, TContext> => {
+
+const mutationKey = ['patchApiProjectsIdMembersUserId'];
+const {mutation: mutationOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }};
+
+      
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof patchApiProjectsIdMembersUserId>>, {id: string;userId: string;data: PatchApiProjectsIdMembersUserIdBody}> = (props) => {
+          const {id,userId,data} = props ?? {};
+
+          return  patchApiProjectsIdMembersUserId(id,userId,data,)
+        }
+
+        
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PatchApiProjectsIdMembersUserIdMutationResult = NonNullable<Awaited<ReturnType<typeof patchApiProjectsIdMembersUserId>>>
+    export type PatchApiProjectsIdMembersUserIdMutationBody = PatchApiProjectsIdMembersUserIdBody
+    export type PatchApiProjectsIdMembersUserIdMutationError = BadRequestResponse | ForbiddenResponse | NotFoundResponse
+
+    /**
+ * @summary Promote a participant to Lead, or demote a Lead to a plain participant
+ */
+export const usePatchApiProjectsIdMembersUserId = <TError = BadRequestResponse | ForbiddenResponse | NotFoundResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof patchApiProjectsIdMembersUserId>>, TError,{id: string;userId: string;data: PatchApiProjectsIdMembersUserIdBody}, TContext>, }
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof patchApiProjectsIdMembersUserId>>,
+        TError,
+        {id: string;userId: string;data: PatchApiProjectsIdMembersUserIdBody},
+        TContext
+      > => {
+
+      const mutationOptions = getPatchApiProjectsIdMembersUserIdMutationOptions(options);
+
+      return useMutation(mutationOptions, queryClient);
+    }
+    
+/**
+ * Requires Owner/Admin/Workspace Admin, or this project's own Lead — but a Lead cannot remove another Lead (or demote themselves this way); only Owner/Admin/Workspace Admin can remove a LEAD row.
+ * @summary Remove a project participant
+ */
+export const deleteApiProjectsIdMembersUserId = (
+    id: string,
+    userId: string,
+ ) => {
+      
+      
+      return customInstance<void>(
+      {url: `/api/projects/${id}/members/${userId}`, method: 'DELETE'
+    },
+      );
+    }
+  
+
+
+export const getDeleteApiProjectsIdMembersUserIdMutationOptions = <TError = ForbiddenResponse | NotFoundResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteApiProjectsIdMembersUserId>>, TError,{id: string;userId: string}, TContext>, }
+): UseMutationOptions<Awaited<ReturnType<typeof deleteApiProjectsIdMembersUserId>>, TError,{id: string;userId: string}, TContext> => {
+
+const mutationKey = ['deleteApiProjectsIdMembersUserId'];
+const {mutation: mutationOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }};
+
+      
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteApiProjectsIdMembersUserId>>, {id: string;userId: string}> = (props) => {
+          const {id,userId} = props ?? {};
+
+          return  deleteApiProjectsIdMembersUserId(id,userId,)
+        }
+
+        
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteApiProjectsIdMembersUserIdMutationResult = NonNullable<Awaited<ReturnType<typeof deleteApiProjectsIdMembersUserId>>>
+    
+    export type DeleteApiProjectsIdMembersUserIdMutationError = ForbiddenResponse | NotFoundResponse
+
+    /**
+ * @summary Remove a project participant
+ */
+export const useDeleteApiProjectsIdMembersUserId = <TError = ForbiddenResponse | NotFoundResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteApiProjectsIdMembersUserId>>, TError,{id: string;userId: string}, TContext>, }
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof deleteApiProjectsIdMembersUserId>>,
+        TError,
+        {id: string;userId: string},
+        TContext
+      > => {
+
+      const mutationOptions = getDeleteApiProjectsIdMembersUserIdMutationOptions(options);
 
       return useMutation(mutationOptions, queryClient);
     }
@@ -1522,6 +1972,1443 @@ export const useDeleteApiTimeEntriesId = <TError = NotFoundResponse,
       > => {
 
       const mutationOptions = getDeleteApiTimeEntriesIdMutationOptions(options);
+
+      return useMutation(mutationOptions, queryClient);
+    }
+    
+/**
+ * The one endpoint every other service calls (via the optional X-Workspace-Id header) to authorize a request. workspace_id is optional here too — omit it to resolve (and lazily create, on first use) the caller's default organization/workspace.
+ * @summary Resolve the caller's role in a workspace
+ */
+export const getApiWorkspaceAccess = (
+    params?: GetApiWorkspaceAccessParams,
+ signal?: AbortSignal
+) => {
+      
+      
+      return customInstance<Access>(
+      {url: `/api/workspace-access`, method: 'GET',
+        params, signal
+    },
+      );
+    }
+  
+
+
+
+export const getGetApiWorkspaceAccessQueryKey = (params?: GetApiWorkspaceAccessParams,) => {
+    return [
+    `/api/workspace-access`, ...(params ? [params]: [])
+    ] as const;
+    }
+
+    
+export const getGetApiWorkspaceAccessQueryOptions = <TData = Awaited<ReturnType<typeof getApiWorkspaceAccess>>, TError = ForbiddenResponse | NotFoundResponse>(params?: GetApiWorkspaceAccessParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiWorkspaceAccess>>, TError, TData>>, }
+) => {
+
+const {query: queryOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetApiWorkspaceAccessQueryKey(params);
+
+  
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getApiWorkspaceAccess>>> = ({ signal }) => getApiWorkspaceAccess(params, signal);
+
+      
+
+      
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getApiWorkspaceAccess>>, TError, TData> & { queryKey: DataTag<QueryKey, TData> }
+}
+
+export type GetApiWorkspaceAccessQueryResult = NonNullable<Awaited<ReturnType<typeof getApiWorkspaceAccess>>>
+export type GetApiWorkspaceAccessQueryError = ForbiddenResponse | NotFoundResponse
+
+
+export function useGetApiWorkspaceAccess<TData = Awaited<ReturnType<typeof getApiWorkspaceAccess>>, TError = ForbiddenResponse | NotFoundResponse>(
+ params: undefined |  GetApiWorkspaceAccessParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiWorkspaceAccess>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getApiWorkspaceAccess>>,
+          TError,
+          Awaited<ReturnType<typeof getApiWorkspaceAccess>>
+        > , 'initialData'
+      >, }
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> }
+export function useGetApiWorkspaceAccess<TData = Awaited<ReturnType<typeof getApiWorkspaceAccess>>, TError = ForbiddenResponse | NotFoundResponse>(
+ params?: GetApiWorkspaceAccessParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiWorkspaceAccess>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getApiWorkspaceAccess>>,
+          TError,
+          Awaited<ReturnType<typeof getApiWorkspaceAccess>>
+        > , 'initialData'
+      >, }
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> }
+export function useGetApiWorkspaceAccess<TData = Awaited<ReturnType<typeof getApiWorkspaceAccess>>, TError = ForbiddenResponse | NotFoundResponse>(
+ params?: GetApiWorkspaceAccessParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiWorkspaceAccess>>, TError, TData>>, }
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> }
+/**
+ * @summary Resolve the caller's role in a workspace
+ */
+
+export function useGetApiWorkspaceAccess<TData = Awaited<ReturnType<typeof getApiWorkspaceAccess>>, TError = ForbiddenResponse | NotFoundResponse>(
+ params?: GetApiWorkspaceAccessParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiWorkspaceAccess>>, TError, TData>>, }
+ , queryClient?: QueryClient 
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> } {
+
+  const queryOptions = getGetApiWorkspaceAccessQueryOptions(params,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> };
+
+  query.queryKey = queryOptions.queryKey ;
+
+  return query;
+}
+
+
+
+
+/**
+ * @summary Create an organization
+ */
+export const postApiOrganizations = (
+    postApiOrganizationsBody: PostApiOrganizationsBody,
+ signal?: AbortSignal
+) => {
+      
+      
+      return customInstance<Organization>(
+      {url: `/api/organizations`, method: 'POST',
+      headers: {'Content-Type': 'application/json', },
+      data: postApiOrganizationsBody, signal
+    },
+      );
+    }
+  
+
+
+export const getPostApiOrganizationsMutationOptions = <TError = BadRequestResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postApiOrganizations>>, TError,{data: PostApiOrganizationsBody}, TContext>, }
+): UseMutationOptions<Awaited<ReturnType<typeof postApiOrganizations>>, TError,{data: PostApiOrganizationsBody}, TContext> => {
+
+const mutationKey = ['postApiOrganizations'];
+const {mutation: mutationOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }};
+
+      
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postApiOrganizations>>, {data: PostApiOrganizationsBody}> = (props) => {
+          const {data} = props ?? {};
+
+          return  postApiOrganizations(data,)
+        }
+
+        
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostApiOrganizationsMutationResult = NonNullable<Awaited<ReturnType<typeof postApiOrganizations>>>
+    export type PostApiOrganizationsMutationBody = PostApiOrganizationsBody
+    export type PostApiOrganizationsMutationError = BadRequestResponse
+
+    /**
+ * @summary Create an organization
+ */
+export const usePostApiOrganizations = <TError = BadRequestResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postApiOrganizations>>, TError,{data: PostApiOrganizationsBody}, TContext>, }
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postApiOrganizations>>,
+        TError,
+        {data: PostApiOrganizationsBody},
+        TContext
+      > => {
+
+      const mutationOptions = getPostApiOrganizationsMutationOptions(options);
+
+      return useMutation(mutationOptions, queryClient);
+    }
+    
+/**
+ * @summary List organizations I belong to
+ */
+export const getApiOrganizations = (
+    
+ signal?: AbortSignal
+) => {
+      
+      
+      return customInstance<Organization[]>(
+      {url: `/api/organizations`, method: 'GET', signal
+    },
+      );
+    }
+  
+
+
+
+export const getGetApiOrganizationsQueryKey = () => {
+    return [
+    `/api/organizations`
+    ] as const;
+    }
+
+    
+export const getGetApiOrganizationsQueryOptions = <TData = Awaited<ReturnType<typeof getApiOrganizations>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiOrganizations>>, TError, TData>>, }
+) => {
+
+const {query: queryOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetApiOrganizationsQueryKey();
+
+  
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getApiOrganizations>>> = ({ signal }) => getApiOrganizations(signal);
+
+      
+
+      
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getApiOrganizations>>, TError, TData> & { queryKey: DataTag<QueryKey, TData> }
+}
+
+export type GetApiOrganizationsQueryResult = NonNullable<Awaited<ReturnType<typeof getApiOrganizations>>>
+export type GetApiOrganizationsQueryError = unknown
+
+
+export function useGetApiOrganizations<TData = Awaited<ReturnType<typeof getApiOrganizations>>, TError = unknown>(
+  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiOrganizations>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getApiOrganizations>>,
+          TError,
+          Awaited<ReturnType<typeof getApiOrganizations>>
+        > , 'initialData'
+      >, }
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> }
+export function useGetApiOrganizations<TData = Awaited<ReturnType<typeof getApiOrganizations>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiOrganizations>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getApiOrganizations>>,
+          TError,
+          Awaited<ReturnType<typeof getApiOrganizations>>
+        > , 'initialData'
+      >, }
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> }
+export function useGetApiOrganizations<TData = Awaited<ReturnType<typeof getApiOrganizations>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiOrganizations>>, TError, TData>>, }
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> }
+/**
+ * @summary List organizations I belong to
+ */
+
+export function useGetApiOrganizations<TData = Awaited<ReturnType<typeof getApiOrganizations>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiOrganizations>>, TError, TData>>, }
+ , queryClient?: QueryClient 
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> } {
+
+  const queryOptions = getGetApiOrganizationsQueryOptions(options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> };
+
+  query.queryKey = queryOptions.queryKey ;
+
+  return query;
+}
+
+
+
+
+/**
+ * Requires the caller to belong to this org (any role).
+ * @summary Get an organization
+ */
+export const getApiOrganizationsId = (
+    id: string,
+ signal?: AbortSignal
+) => {
+      
+      
+      return customInstance<Organization>(
+      {url: `/api/organizations/${id}`, method: 'GET', signal
+    },
+      );
+    }
+  
+
+
+
+export const getGetApiOrganizationsIdQueryKey = (id?: string,) => {
+    return [
+    `/api/organizations/${id}`
+    ] as const;
+    }
+
+    
+export const getGetApiOrganizationsIdQueryOptions = <TData = Awaited<ReturnType<typeof getApiOrganizationsId>>, TError = ForbiddenResponse | NotFoundResponse>(id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiOrganizationsId>>, TError, TData>>, }
+) => {
+
+const {query: queryOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetApiOrganizationsIdQueryKey(id);
+
+  
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getApiOrganizationsId>>> = ({ signal }) => getApiOrganizationsId(id, signal);
+
+      
+
+      
+
+   return  { queryKey, queryFn, enabled: !!(id), ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getApiOrganizationsId>>, TError, TData> & { queryKey: DataTag<QueryKey, TData> }
+}
+
+export type GetApiOrganizationsIdQueryResult = NonNullable<Awaited<ReturnType<typeof getApiOrganizationsId>>>
+export type GetApiOrganizationsIdQueryError = ForbiddenResponse | NotFoundResponse
+
+
+export function useGetApiOrganizationsId<TData = Awaited<ReturnType<typeof getApiOrganizationsId>>, TError = ForbiddenResponse | NotFoundResponse>(
+ id: string, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiOrganizationsId>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getApiOrganizationsId>>,
+          TError,
+          Awaited<ReturnType<typeof getApiOrganizationsId>>
+        > , 'initialData'
+      >, }
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> }
+export function useGetApiOrganizationsId<TData = Awaited<ReturnType<typeof getApiOrganizationsId>>, TError = ForbiddenResponse | NotFoundResponse>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiOrganizationsId>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getApiOrganizationsId>>,
+          TError,
+          Awaited<ReturnType<typeof getApiOrganizationsId>>
+        > , 'initialData'
+      >, }
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> }
+export function useGetApiOrganizationsId<TData = Awaited<ReturnType<typeof getApiOrganizationsId>>, TError = ForbiddenResponse | NotFoundResponse>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiOrganizationsId>>, TError, TData>>, }
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> }
+/**
+ * @summary Get an organization
+ */
+
+export function useGetApiOrganizationsId<TData = Awaited<ReturnType<typeof getApiOrganizationsId>>, TError = ForbiddenResponse | NotFoundResponse>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiOrganizationsId>>, TError, TData>>, }
+ , queryClient?: QueryClient 
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> } {
+
+  const queryOptions = getGetApiOrganizationsIdQueryOptions(id,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> };
+
+  query.queryKey = queryOptions.queryKey ;
+
+  return query;
+}
+
+
+
+
+/**
+ * Requires OWNER or ADMIN.
+ * @summary Rename an organization
+ */
+export const patchApiOrganizationsId = (
+    id: string,
+    patchApiOrganizationsIdBody: PatchApiOrganizationsIdBody,
+ ) => {
+      
+      
+      return customInstance<Organization>(
+      {url: `/api/organizations/${id}`, method: 'PATCH',
+      headers: {'Content-Type': 'application/json', },
+      data: patchApiOrganizationsIdBody
+    },
+      );
+    }
+  
+
+
+export const getPatchApiOrganizationsIdMutationOptions = <TError = BadRequestResponse | ForbiddenResponse | NotFoundResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof patchApiOrganizationsId>>, TError,{id: string;data: PatchApiOrganizationsIdBody}, TContext>, }
+): UseMutationOptions<Awaited<ReturnType<typeof patchApiOrganizationsId>>, TError,{id: string;data: PatchApiOrganizationsIdBody}, TContext> => {
+
+const mutationKey = ['patchApiOrganizationsId'];
+const {mutation: mutationOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }};
+
+      
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof patchApiOrganizationsId>>, {id: string;data: PatchApiOrganizationsIdBody}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  patchApiOrganizationsId(id,data,)
+        }
+
+        
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PatchApiOrganizationsIdMutationResult = NonNullable<Awaited<ReturnType<typeof patchApiOrganizationsId>>>
+    export type PatchApiOrganizationsIdMutationBody = PatchApiOrganizationsIdBody
+    export type PatchApiOrganizationsIdMutationError = BadRequestResponse | ForbiddenResponse | NotFoundResponse
+
+    /**
+ * @summary Rename an organization
+ */
+export const usePatchApiOrganizationsId = <TError = BadRequestResponse | ForbiddenResponse | NotFoundResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof patchApiOrganizationsId>>, TError,{id: string;data: PatchApiOrganizationsIdBody}, TContext>, }
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof patchApiOrganizationsId>>,
+        TError,
+        {id: string;data: PatchApiOrganizationsIdBody},
+        TContext
+      > => {
+
+      const mutationOptions = getPatchApiOrganizationsIdMutationOptions(options);
+
+      return useMutation(mutationOptions, queryClient);
+    }
+    
+/**
+ * Requires OWNER or ADMIN.
+ * @summary Delete an organization
+ */
+export const deleteApiOrganizationsId = (
+    id: string,
+ ) => {
+      
+      
+      return customInstance<void>(
+      {url: `/api/organizations/${id}`, method: 'DELETE'
+    },
+      );
+    }
+  
+
+
+export const getDeleteApiOrganizationsIdMutationOptions = <TError = ForbiddenResponse | NotFoundResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteApiOrganizationsId>>, TError,{id: string}, TContext>, }
+): UseMutationOptions<Awaited<ReturnType<typeof deleteApiOrganizationsId>>, TError,{id: string}, TContext> => {
+
+const mutationKey = ['deleteApiOrganizationsId'];
+const {mutation: mutationOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }};
+
+      
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteApiOrganizationsId>>, {id: string}> = (props) => {
+          const {id} = props ?? {};
+
+          return  deleteApiOrganizationsId(id,)
+        }
+
+        
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteApiOrganizationsIdMutationResult = NonNullable<Awaited<ReturnType<typeof deleteApiOrganizationsId>>>
+    
+    export type DeleteApiOrganizationsIdMutationError = ForbiddenResponse | NotFoundResponse
+
+    /**
+ * @summary Delete an organization
+ */
+export const useDeleteApiOrganizationsId = <TError = ForbiddenResponse | NotFoundResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteApiOrganizationsId>>, TError,{id: string}, TContext>, }
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof deleteApiOrganizationsId>>,
+        TError,
+        {id: string},
+        TContext
+      > => {
+
+      const mutationOptions = getDeleteApiOrganizationsIdMutationOptions(options);
+
+      return useMutation(mutationOptions, queryClient);
+    }
+    
+/**
+ * Only the current OWNER can call this. Demotes the caller to ADMIN and promotes to_user_id to OWNER (must already be a member).
+ * @summary Transfer organization ownership to another member
+ */
+export const postApiOrganizationsIdTransferOwner = (
+    id: string,
+    postApiOrganizationsIdTransferOwnerBody: PostApiOrganizationsIdTransferOwnerBody,
+ signal?: AbortSignal
+) => {
+      
+      
+      return customInstance<void>(
+      {url: `/api/organizations/${id}/transfer-owner`, method: 'POST',
+      headers: {'Content-Type': 'application/json', },
+      data: postApiOrganizationsIdTransferOwnerBody, signal
+    },
+      );
+    }
+  
+
+
+export const getPostApiOrganizationsIdTransferOwnerMutationOptions = <TError = BadRequestResponse | ForbiddenResponse | NotFoundResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postApiOrganizationsIdTransferOwner>>, TError,{id: string;data: PostApiOrganizationsIdTransferOwnerBody}, TContext>, }
+): UseMutationOptions<Awaited<ReturnType<typeof postApiOrganizationsIdTransferOwner>>, TError,{id: string;data: PostApiOrganizationsIdTransferOwnerBody}, TContext> => {
+
+const mutationKey = ['postApiOrganizationsIdTransferOwner'];
+const {mutation: mutationOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }};
+
+      
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postApiOrganizationsIdTransferOwner>>, {id: string;data: PostApiOrganizationsIdTransferOwnerBody}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  postApiOrganizationsIdTransferOwner(id,data,)
+        }
+
+        
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostApiOrganizationsIdTransferOwnerMutationResult = NonNullable<Awaited<ReturnType<typeof postApiOrganizationsIdTransferOwner>>>
+    export type PostApiOrganizationsIdTransferOwnerMutationBody = PostApiOrganizationsIdTransferOwnerBody
+    export type PostApiOrganizationsIdTransferOwnerMutationError = BadRequestResponse | ForbiddenResponse | NotFoundResponse
+
+    /**
+ * @summary Transfer organization ownership to another member
+ */
+export const usePostApiOrganizationsIdTransferOwner = <TError = BadRequestResponse | ForbiddenResponse | NotFoundResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postApiOrganizationsIdTransferOwner>>, TError,{id: string;data: PostApiOrganizationsIdTransferOwnerBody}, TContext>, }
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postApiOrganizationsIdTransferOwner>>,
+        TError,
+        {id: string;data: PostApiOrganizationsIdTransferOwnerBody},
+        TContext
+      > => {
+
+      const mutationOptions = getPostApiOrganizationsIdTransferOwnerMutationOptions(options);
+
+      return useMutation(mutationOptions, queryClient);
+    }
+    
+/**
+ * Requires OWNER or ADMIN. Always grants ADMIN — OWNER is assigned exactly once, at org creation, and moved only via transfer-owner.
+ * @summary Add an organization member
+ */
+export const postApiOrganizationsIdMembers = (
+    id: string,
+    postApiOrganizationsIdMembersBody: PostApiOrganizationsIdMembersBody,
+ signal?: AbortSignal
+) => {
+      
+      
+      return customInstance<OrgMembership>(
+      {url: `/api/organizations/${id}/members`, method: 'POST',
+      headers: {'Content-Type': 'application/json', },
+      data: postApiOrganizationsIdMembersBody, signal
+    },
+      );
+    }
+  
+
+
+export const getPostApiOrganizationsIdMembersMutationOptions = <TError = BadRequestResponse | ForbiddenResponse | NotFoundResponse | Error,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postApiOrganizationsIdMembers>>, TError,{id: string;data: PostApiOrganizationsIdMembersBody}, TContext>, }
+): UseMutationOptions<Awaited<ReturnType<typeof postApiOrganizationsIdMembers>>, TError,{id: string;data: PostApiOrganizationsIdMembersBody}, TContext> => {
+
+const mutationKey = ['postApiOrganizationsIdMembers'];
+const {mutation: mutationOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }};
+
+      
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postApiOrganizationsIdMembers>>, {id: string;data: PostApiOrganizationsIdMembersBody}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  postApiOrganizationsIdMembers(id,data,)
+        }
+
+        
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostApiOrganizationsIdMembersMutationResult = NonNullable<Awaited<ReturnType<typeof postApiOrganizationsIdMembers>>>
+    export type PostApiOrganizationsIdMembersMutationBody = PostApiOrganizationsIdMembersBody
+    export type PostApiOrganizationsIdMembersMutationError = BadRequestResponse | ForbiddenResponse | NotFoundResponse | Error
+
+    /**
+ * @summary Add an organization member
+ */
+export const usePostApiOrganizationsIdMembers = <TError = BadRequestResponse | ForbiddenResponse | NotFoundResponse | Error,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postApiOrganizationsIdMembers>>, TError,{id: string;data: PostApiOrganizationsIdMembersBody}, TContext>, }
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postApiOrganizationsIdMembers>>,
+        TError,
+        {id: string;data: PostApiOrganizationsIdMembersBody},
+        TContext
+      > => {
+
+      const mutationOptions = getPostApiOrganizationsIdMembersMutationOptions(options);
+
+      return useMutation(mutationOptions, queryClient);
+    }
+    
+/**
+ * Requires the caller to belong to this org (any role).
+ * @summary List organization members
+ */
+export const getApiOrganizationsIdMembers = (
+    id: string,
+ signal?: AbortSignal
+) => {
+      
+      
+      return customInstance<OrgMembership[]>(
+      {url: `/api/organizations/${id}/members`, method: 'GET', signal
+    },
+      );
+    }
+  
+
+
+
+export const getGetApiOrganizationsIdMembersQueryKey = (id?: string,) => {
+    return [
+    `/api/organizations/${id}/members`
+    ] as const;
+    }
+
+    
+export const getGetApiOrganizationsIdMembersQueryOptions = <TData = Awaited<ReturnType<typeof getApiOrganizationsIdMembers>>, TError = ForbiddenResponse | NotFoundResponse>(id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiOrganizationsIdMembers>>, TError, TData>>, }
+) => {
+
+const {query: queryOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetApiOrganizationsIdMembersQueryKey(id);
+
+  
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getApiOrganizationsIdMembers>>> = ({ signal }) => getApiOrganizationsIdMembers(id, signal);
+
+      
+
+      
+
+   return  { queryKey, queryFn, enabled: !!(id), ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getApiOrganizationsIdMembers>>, TError, TData> & { queryKey: DataTag<QueryKey, TData> }
+}
+
+export type GetApiOrganizationsIdMembersQueryResult = NonNullable<Awaited<ReturnType<typeof getApiOrganizationsIdMembers>>>
+export type GetApiOrganizationsIdMembersQueryError = ForbiddenResponse | NotFoundResponse
+
+
+export function useGetApiOrganizationsIdMembers<TData = Awaited<ReturnType<typeof getApiOrganizationsIdMembers>>, TError = ForbiddenResponse | NotFoundResponse>(
+ id: string, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiOrganizationsIdMembers>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getApiOrganizationsIdMembers>>,
+          TError,
+          Awaited<ReturnType<typeof getApiOrganizationsIdMembers>>
+        > , 'initialData'
+      >, }
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> }
+export function useGetApiOrganizationsIdMembers<TData = Awaited<ReturnType<typeof getApiOrganizationsIdMembers>>, TError = ForbiddenResponse | NotFoundResponse>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiOrganizationsIdMembers>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getApiOrganizationsIdMembers>>,
+          TError,
+          Awaited<ReturnType<typeof getApiOrganizationsIdMembers>>
+        > , 'initialData'
+      >, }
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> }
+export function useGetApiOrganizationsIdMembers<TData = Awaited<ReturnType<typeof getApiOrganizationsIdMembers>>, TError = ForbiddenResponse | NotFoundResponse>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiOrganizationsIdMembers>>, TError, TData>>, }
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> }
+/**
+ * @summary List organization members
+ */
+
+export function useGetApiOrganizationsIdMembers<TData = Awaited<ReturnType<typeof getApiOrganizationsIdMembers>>, TError = ForbiddenResponse | NotFoundResponse>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiOrganizationsIdMembers>>, TError, TData>>, }
+ , queryClient?: QueryClient 
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> } {
+
+  const queryOptions = getGetApiOrganizationsIdMembersQueryOptions(id,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> };
+
+  query.queryKey = queryOptions.queryKey ;
+
+  return query;
+}
+
+
+
+
+/**
+ * Requires OWNER or ADMIN. Returns 409 if userId is the org's OWNER — transfer ownership first.
+ * @summary Remove an organization member
+ */
+export const deleteApiOrganizationsIdMembersUserId = (
+    id: string,
+    userId: string,
+ ) => {
+      
+      
+      return customInstance<void>(
+      {url: `/api/organizations/${id}/members/${userId}`, method: 'DELETE'
+    },
+      );
+    }
+  
+
+
+export const getDeleteApiOrganizationsIdMembersUserIdMutationOptions = <TError = ForbiddenResponse | NotFoundResponse | Error,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteApiOrganizationsIdMembersUserId>>, TError,{id: string;userId: string}, TContext>, }
+): UseMutationOptions<Awaited<ReturnType<typeof deleteApiOrganizationsIdMembersUserId>>, TError,{id: string;userId: string}, TContext> => {
+
+const mutationKey = ['deleteApiOrganizationsIdMembersUserId'];
+const {mutation: mutationOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }};
+
+      
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteApiOrganizationsIdMembersUserId>>, {id: string;userId: string}> = (props) => {
+          const {id,userId} = props ?? {};
+
+          return  deleteApiOrganizationsIdMembersUserId(id,userId,)
+        }
+
+        
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteApiOrganizationsIdMembersUserIdMutationResult = NonNullable<Awaited<ReturnType<typeof deleteApiOrganizationsIdMembersUserId>>>
+    
+    export type DeleteApiOrganizationsIdMembersUserIdMutationError = ForbiddenResponse | NotFoundResponse | Error
+
+    /**
+ * @summary Remove an organization member
+ */
+export const useDeleteApiOrganizationsIdMembersUserId = <TError = ForbiddenResponse | NotFoundResponse | Error,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteApiOrganizationsIdMembersUserId>>, TError,{id: string;userId: string}, TContext>, }
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof deleteApiOrganizationsIdMembersUserId>>,
+        TError,
+        {id: string;userId: string},
+        TContext
+      > => {
+
+      const mutationOptions = getDeleteApiOrganizationsIdMembersUserIdMutationOptions(options);
+
+      return useMutation(mutationOptions, queryClient);
+    }
+    
+/**
+ * Requires OWNER or ADMIN in org_id.
+ * @summary Create a workspace
+ */
+export const postApiWorkspaces = (
+    postApiWorkspacesBody: PostApiWorkspacesBody,
+ signal?: AbortSignal
+) => {
+      
+      
+      return customInstance<Workspace>(
+      {url: `/api/workspaces`, method: 'POST',
+      headers: {'Content-Type': 'application/json', },
+      data: postApiWorkspacesBody, signal
+    },
+      );
+    }
+  
+
+
+export const getPostApiWorkspacesMutationOptions = <TError = BadRequestResponse | ForbiddenResponse | NotFoundResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postApiWorkspaces>>, TError,{data: PostApiWorkspacesBody}, TContext>, }
+): UseMutationOptions<Awaited<ReturnType<typeof postApiWorkspaces>>, TError,{data: PostApiWorkspacesBody}, TContext> => {
+
+const mutationKey = ['postApiWorkspaces'];
+const {mutation: mutationOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }};
+
+      
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postApiWorkspaces>>, {data: PostApiWorkspacesBody}> = (props) => {
+          const {data} = props ?? {};
+
+          return  postApiWorkspaces(data,)
+        }
+
+        
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostApiWorkspacesMutationResult = NonNullable<Awaited<ReturnType<typeof postApiWorkspaces>>>
+    export type PostApiWorkspacesMutationBody = PostApiWorkspacesBody
+    export type PostApiWorkspacesMutationError = BadRequestResponse | ForbiddenResponse | NotFoundResponse
+
+    /**
+ * @summary Create a workspace
+ */
+export const usePostApiWorkspaces = <TError = BadRequestResponse | ForbiddenResponse | NotFoundResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postApiWorkspaces>>, TError,{data: PostApiWorkspacesBody}, TContext>, }
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postApiWorkspaces>>,
+        TError,
+        {data: PostApiWorkspacesBody},
+        TContext
+      > => {
+
+      const mutationOptions = getPostApiWorkspacesMutationOptions(options);
+
+      return useMutation(mutationOptions, queryClient);
+    }
+    
+/**
+ * Requires the caller to belong to org_id (any role).
+ * @summary List workspaces in an organization
+ */
+export const getApiWorkspaces = (
+    params: GetApiWorkspacesParams,
+ signal?: AbortSignal
+) => {
+      
+      
+      return customInstance<Workspace[]>(
+      {url: `/api/workspaces`, method: 'GET',
+        params, signal
+    },
+      );
+    }
+  
+
+
+
+export const getGetApiWorkspacesQueryKey = (params?: GetApiWorkspacesParams,) => {
+    return [
+    `/api/workspaces`, ...(params ? [params]: [])
+    ] as const;
+    }
+
+    
+export const getGetApiWorkspacesQueryOptions = <TData = Awaited<ReturnType<typeof getApiWorkspaces>>, TError = BadRequestResponse | ForbiddenResponse | NotFoundResponse>(params: GetApiWorkspacesParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiWorkspaces>>, TError, TData>>, }
+) => {
+
+const {query: queryOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetApiWorkspacesQueryKey(params);
+
+  
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getApiWorkspaces>>> = ({ signal }) => getApiWorkspaces(params, signal);
+
+      
+
+      
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getApiWorkspaces>>, TError, TData> & { queryKey: DataTag<QueryKey, TData> }
+}
+
+export type GetApiWorkspacesQueryResult = NonNullable<Awaited<ReturnType<typeof getApiWorkspaces>>>
+export type GetApiWorkspacesQueryError = BadRequestResponse | ForbiddenResponse | NotFoundResponse
+
+
+export function useGetApiWorkspaces<TData = Awaited<ReturnType<typeof getApiWorkspaces>>, TError = BadRequestResponse | ForbiddenResponse | NotFoundResponse>(
+ params: GetApiWorkspacesParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiWorkspaces>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getApiWorkspaces>>,
+          TError,
+          Awaited<ReturnType<typeof getApiWorkspaces>>
+        > , 'initialData'
+      >, }
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> }
+export function useGetApiWorkspaces<TData = Awaited<ReturnType<typeof getApiWorkspaces>>, TError = BadRequestResponse | ForbiddenResponse | NotFoundResponse>(
+ params: GetApiWorkspacesParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiWorkspaces>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getApiWorkspaces>>,
+          TError,
+          Awaited<ReturnType<typeof getApiWorkspaces>>
+        > , 'initialData'
+      >, }
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> }
+export function useGetApiWorkspaces<TData = Awaited<ReturnType<typeof getApiWorkspaces>>, TError = BadRequestResponse | ForbiddenResponse | NotFoundResponse>(
+ params: GetApiWorkspacesParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiWorkspaces>>, TError, TData>>, }
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> }
+/**
+ * @summary List workspaces in an organization
+ */
+
+export function useGetApiWorkspaces<TData = Awaited<ReturnType<typeof getApiWorkspaces>>, TError = BadRequestResponse | ForbiddenResponse | NotFoundResponse>(
+ params: GetApiWorkspacesParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiWorkspaces>>, TError, TData>>, }
+ , queryClient?: QueryClient 
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> } {
+
+  const queryOptions = getGetApiWorkspacesQueryOptions(params,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> };
+
+  query.queryKey = queryOptions.queryKey ;
+
+  return query;
+}
+
+
+
+
+/**
+ * Requires any resolvable role in this workspace.
+ * @summary Get a workspace
+ */
+export const getApiWorkspacesId = (
+    id: string,
+ signal?: AbortSignal
+) => {
+      
+      
+      return customInstance<Workspace>(
+      {url: `/api/workspaces/${id}`, method: 'GET', signal
+    },
+      );
+    }
+  
+
+
+
+export const getGetApiWorkspacesIdQueryKey = (id?: string,) => {
+    return [
+    `/api/workspaces/${id}`
+    ] as const;
+    }
+
+    
+export const getGetApiWorkspacesIdQueryOptions = <TData = Awaited<ReturnType<typeof getApiWorkspacesId>>, TError = ForbiddenResponse | NotFoundResponse>(id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiWorkspacesId>>, TError, TData>>, }
+) => {
+
+const {query: queryOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetApiWorkspacesIdQueryKey(id);
+
+  
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getApiWorkspacesId>>> = ({ signal }) => getApiWorkspacesId(id, signal);
+
+      
+
+      
+
+   return  { queryKey, queryFn, enabled: !!(id), ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getApiWorkspacesId>>, TError, TData> & { queryKey: DataTag<QueryKey, TData> }
+}
+
+export type GetApiWorkspacesIdQueryResult = NonNullable<Awaited<ReturnType<typeof getApiWorkspacesId>>>
+export type GetApiWorkspacesIdQueryError = ForbiddenResponse | NotFoundResponse
+
+
+export function useGetApiWorkspacesId<TData = Awaited<ReturnType<typeof getApiWorkspacesId>>, TError = ForbiddenResponse | NotFoundResponse>(
+ id: string, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiWorkspacesId>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getApiWorkspacesId>>,
+          TError,
+          Awaited<ReturnType<typeof getApiWorkspacesId>>
+        > , 'initialData'
+      >, }
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> }
+export function useGetApiWorkspacesId<TData = Awaited<ReturnType<typeof getApiWorkspacesId>>, TError = ForbiddenResponse | NotFoundResponse>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiWorkspacesId>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getApiWorkspacesId>>,
+          TError,
+          Awaited<ReturnType<typeof getApiWorkspacesId>>
+        > , 'initialData'
+      >, }
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> }
+export function useGetApiWorkspacesId<TData = Awaited<ReturnType<typeof getApiWorkspacesId>>, TError = ForbiddenResponse | NotFoundResponse>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiWorkspacesId>>, TError, TData>>, }
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> }
+/**
+ * @summary Get a workspace
+ */
+
+export function useGetApiWorkspacesId<TData = Awaited<ReturnType<typeof getApiWorkspacesId>>, TError = ForbiddenResponse | NotFoundResponse>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiWorkspacesId>>, TError, TData>>, }
+ , queryClient?: QueryClient 
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> } {
+
+  const queryOptions = getGetApiWorkspacesIdQueryOptions(id,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> };
+
+  query.queryKey = queryOptions.queryKey ;
+
+  return query;
+}
+
+
+
+
+/**
+ * Requires an OWNER/ADMIN/WORKSPACE_ADMIN role in this workspace.
+ * @summary Rename a workspace
+ */
+export const patchApiWorkspacesId = (
+    id: string,
+    patchApiWorkspacesIdBody: PatchApiWorkspacesIdBody,
+ ) => {
+      
+      
+      return customInstance<Workspace>(
+      {url: `/api/workspaces/${id}`, method: 'PATCH',
+      headers: {'Content-Type': 'application/json', },
+      data: patchApiWorkspacesIdBody
+    },
+      );
+    }
+  
+
+
+export const getPatchApiWorkspacesIdMutationOptions = <TError = BadRequestResponse | ForbiddenResponse | NotFoundResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof patchApiWorkspacesId>>, TError,{id: string;data: PatchApiWorkspacesIdBody}, TContext>, }
+): UseMutationOptions<Awaited<ReturnType<typeof patchApiWorkspacesId>>, TError,{id: string;data: PatchApiWorkspacesIdBody}, TContext> => {
+
+const mutationKey = ['patchApiWorkspacesId'];
+const {mutation: mutationOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }};
+
+      
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof patchApiWorkspacesId>>, {id: string;data: PatchApiWorkspacesIdBody}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  patchApiWorkspacesId(id,data,)
+        }
+
+        
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PatchApiWorkspacesIdMutationResult = NonNullable<Awaited<ReturnType<typeof patchApiWorkspacesId>>>
+    export type PatchApiWorkspacesIdMutationBody = PatchApiWorkspacesIdBody
+    export type PatchApiWorkspacesIdMutationError = BadRequestResponse | ForbiddenResponse | NotFoundResponse
+
+    /**
+ * @summary Rename a workspace
+ */
+export const usePatchApiWorkspacesId = <TError = BadRequestResponse | ForbiddenResponse | NotFoundResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof patchApiWorkspacesId>>, TError,{id: string;data: PatchApiWorkspacesIdBody}, TContext>, }
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof patchApiWorkspacesId>>,
+        TError,
+        {id: string;data: PatchApiWorkspacesIdBody},
+        TContext
+      > => {
+
+      const mutationOptions = getPatchApiWorkspacesIdMutationOptions(options);
+
+      return useMutation(mutationOptions, queryClient);
+    }
+    
+/**
+ * Requires an OWNER/ADMIN/WORKSPACE_ADMIN role in this workspace.
+ * @summary Delete a workspace
+ */
+export const deleteApiWorkspacesId = (
+    id: string,
+ ) => {
+      
+      
+      return customInstance<void>(
+      {url: `/api/workspaces/${id}`, method: 'DELETE'
+    },
+      );
+    }
+  
+
+
+export const getDeleteApiWorkspacesIdMutationOptions = <TError = ForbiddenResponse | NotFoundResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteApiWorkspacesId>>, TError,{id: string}, TContext>, }
+): UseMutationOptions<Awaited<ReturnType<typeof deleteApiWorkspacesId>>, TError,{id: string}, TContext> => {
+
+const mutationKey = ['deleteApiWorkspacesId'];
+const {mutation: mutationOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }};
+
+      
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteApiWorkspacesId>>, {id: string}> = (props) => {
+          const {id} = props ?? {};
+
+          return  deleteApiWorkspacesId(id,)
+        }
+
+        
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteApiWorkspacesIdMutationResult = NonNullable<Awaited<ReturnType<typeof deleteApiWorkspacesId>>>
+    
+    export type DeleteApiWorkspacesIdMutationError = ForbiddenResponse | NotFoundResponse
+
+    /**
+ * @summary Delete a workspace
+ */
+export const useDeleteApiWorkspacesId = <TError = ForbiddenResponse | NotFoundResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteApiWorkspacesId>>, TError,{id: string}, TContext>, }
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof deleteApiWorkspacesId>>,
+        TError,
+        {id: string},
+        TContext
+      > => {
+
+      const mutationOptions = getDeleteApiWorkspacesIdMutationOptions(options);
+
+      return useMutation(mutationOptions, queryClient);
+    }
+    
+/**
+ * Requires an OWNER/ADMIN/WORKSPACE_ADMIN role in this workspace. role defaults to MEMBER if omitted.
+ * @summary Add a workspace member
+ */
+export const postApiWorkspacesIdMembers = (
+    id: string,
+    postApiWorkspacesIdMembersBody: PostApiWorkspacesIdMembersBody,
+ signal?: AbortSignal
+) => {
+      
+      
+      return customInstance<WorkspaceMembership>(
+      {url: `/api/workspaces/${id}/members`, method: 'POST',
+      headers: {'Content-Type': 'application/json', },
+      data: postApiWorkspacesIdMembersBody, signal
+    },
+      );
+    }
+  
+
+
+export const getPostApiWorkspacesIdMembersMutationOptions = <TError = BadRequestResponse | ForbiddenResponse | NotFoundResponse | Error,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postApiWorkspacesIdMembers>>, TError,{id: string;data: PostApiWorkspacesIdMembersBody}, TContext>, }
+): UseMutationOptions<Awaited<ReturnType<typeof postApiWorkspacesIdMembers>>, TError,{id: string;data: PostApiWorkspacesIdMembersBody}, TContext> => {
+
+const mutationKey = ['postApiWorkspacesIdMembers'];
+const {mutation: mutationOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }};
+
+      
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postApiWorkspacesIdMembers>>, {id: string;data: PostApiWorkspacesIdMembersBody}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  postApiWorkspacesIdMembers(id,data,)
+        }
+
+        
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostApiWorkspacesIdMembersMutationResult = NonNullable<Awaited<ReturnType<typeof postApiWorkspacesIdMembers>>>
+    export type PostApiWorkspacesIdMembersMutationBody = PostApiWorkspacesIdMembersBody
+    export type PostApiWorkspacesIdMembersMutationError = BadRequestResponse | ForbiddenResponse | NotFoundResponse | Error
+
+    /**
+ * @summary Add a workspace member
+ */
+export const usePostApiWorkspacesIdMembers = <TError = BadRequestResponse | ForbiddenResponse | NotFoundResponse | Error,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postApiWorkspacesIdMembers>>, TError,{id: string;data: PostApiWorkspacesIdMembersBody}, TContext>, }
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postApiWorkspacesIdMembers>>,
+        TError,
+        {id: string;data: PostApiWorkspacesIdMembersBody},
+        TContext
+      > => {
+
+      const mutationOptions = getPostApiWorkspacesIdMembersMutationOptions(options);
+
+      return useMutation(mutationOptions, queryClient);
+    }
+    
+/**
+ * Requires any resolvable role in this workspace.
+ * @summary List workspace members
+ */
+export const getApiWorkspacesIdMembers = (
+    id: string,
+ signal?: AbortSignal
+) => {
+      
+      
+      return customInstance<WorkspaceMembership[]>(
+      {url: `/api/workspaces/${id}/members`, method: 'GET', signal
+    },
+      );
+    }
+  
+
+
+
+export const getGetApiWorkspacesIdMembersQueryKey = (id?: string,) => {
+    return [
+    `/api/workspaces/${id}/members`
+    ] as const;
+    }
+
+    
+export const getGetApiWorkspacesIdMembersQueryOptions = <TData = Awaited<ReturnType<typeof getApiWorkspacesIdMembers>>, TError = ForbiddenResponse | NotFoundResponse>(id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiWorkspacesIdMembers>>, TError, TData>>, }
+) => {
+
+const {query: queryOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetApiWorkspacesIdMembersQueryKey(id);
+
+  
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getApiWorkspacesIdMembers>>> = ({ signal }) => getApiWorkspacesIdMembers(id, signal);
+
+      
+
+      
+
+   return  { queryKey, queryFn, enabled: !!(id), ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getApiWorkspacesIdMembers>>, TError, TData> & { queryKey: DataTag<QueryKey, TData> }
+}
+
+export type GetApiWorkspacesIdMembersQueryResult = NonNullable<Awaited<ReturnType<typeof getApiWorkspacesIdMembers>>>
+export type GetApiWorkspacesIdMembersQueryError = ForbiddenResponse | NotFoundResponse
+
+
+export function useGetApiWorkspacesIdMembers<TData = Awaited<ReturnType<typeof getApiWorkspacesIdMembers>>, TError = ForbiddenResponse | NotFoundResponse>(
+ id: string, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiWorkspacesIdMembers>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getApiWorkspacesIdMembers>>,
+          TError,
+          Awaited<ReturnType<typeof getApiWorkspacesIdMembers>>
+        > , 'initialData'
+      >, }
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> }
+export function useGetApiWorkspacesIdMembers<TData = Awaited<ReturnType<typeof getApiWorkspacesIdMembers>>, TError = ForbiddenResponse | NotFoundResponse>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiWorkspacesIdMembers>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getApiWorkspacesIdMembers>>,
+          TError,
+          Awaited<ReturnType<typeof getApiWorkspacesIdMembers>>
+        > , 'initialData'
+      >, }
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> }
+export function useGetApiWorkspacesIdMembers<TData = Awaited<ReturnType<typeof getApiWorkspacesIdMembers>>, TError = ForbiddenResponse | NotFoundResponse>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiWorkspacesIdMembers>>, TError, TData>>, }
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> }
+/**
+ * @summary List workspace members
+ */
+
+export function useGetApiWorkspacesIdMembers<TData = Awaited<ReturnType<typeof getApiWorkspacesIdMembers>>, TError = ForbiddenResponse | NotFoundResponse>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiWorkspacesIdMembers>>, TError, TData>>, }
+ , queryClient?: QueryClient 
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> } {
+
+  const queryOptions = getGetApiWorkspacesIdMembersQueryOptions(id,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData> };
+
+  query.queryKey = queryOptions.queryKey ;
+
+  return query;
+}
+
+
+
+
+/**
+ * Requires an OWNER/ADMIN/WORKSPACE_ADMIN role in this workspace.
+ * @summary Change a workspace member's role
+ */
+export const patchApiWorkspacesIdMembersUserId = (
+    id: string,
+    userId: string,
+    patchApiWorkspacesIdMembersUserIdBody: PatchApiWorkspacesIdMembersUserIdBody,
+ ) => {
+      
+      
+      return customInstance<void>(
+      {url: `/api/workspaces/${id}/members/${userId}`, method: 'PATCH',
+      headers: {'Content-Type': 'application/json', },
+      data: patchApiWorkspacesIdMembersUserIdBody
+    },
+      );
+    }
+  
+
+
+export const getPatchApiWorkspacesIdMembersUserIdMutationOptions = <TError = BadRequestResponse | ForbiddenResponse | NotFoundResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof patchApiWorkspacesIdMembersUserId>>, TError,{id: string;userId: string;data: PatchApiWorkspacesIdMembersUserIdBody}, TContext>, }
+): UseMutationOptions<Awaited<ReturnType<typeof patchApiWorkspacesIdMembersUserId>>, TError,{id: string;userId: string;data: PatchApiWorkspacesIdMembersUserIdBody}, TContext> => {
+
+const mutationKey = ['patchApiWorkspacesIdMembersUserId'];
+const {mutation: mutationOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }};
+
+      
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof patchApiWorkspacesIdMembersUserId>>, {id: string;userId: string;data: PatchApiWorkspacesIdMembersUserIdBody}> = (props) => {
+          const {id,userId,data} = props ?? {};
+
+          return  patchApiWorkspacesIdMembersUserId(id,userId,data,)
+        }
+
+        
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PatchApiWorkspacesIdMembersUserIdMutationResult = NonNullable<Awaited<ReturnType<typeof patchApiWorkspacesIdMembersUserId>>>
+    export type PatchApiWorkspacesIdMembersUserIdMutationBody = PatchApiWorkspacesIdMembersUserIdBody
+    export type PatchApiWorkspacesIdMembersUserIdMutationError = BadRequestResponse | ForbiddenResponse | NotFoundResponse
+
+    /**
+ * @summary Change a workspace member's role
+ */
+export const usePatchApiWorkspacesIdMembersUserId = <TError = BadRequestResponse | ForbiddenResponse | NotFoundResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof patchApiWorkspacesIdMembersUserId>>, TError,{id: string;userId: string;data: PatchApiWorkspacesIdMembersUserIdBody}, TContext>, }
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof patchApiWorkspacesIdMembersUserId>>,
+        TError,
+        {id: string;userId: string;data: PatchApiWorkspacesIdMembersUserIdBody},
+        TContext
+      > => {
+
+      const mutationOptions = getPatchApiWorkspacesIdMembersUserIdMutationOptions(options);
+
+      return useMutation(mutationOptions, queryClient);
+    }
+    
+/**
+ * Requires an OWNER/ADMIN/WORKSPACE_ADMIN role in this workspace.
+ * @summary Remove a workspace member
+ */
+export const deleteApiWorkspacesIdMembersUserId = (
+    id: string,
+    userId: string,
+ ) => {
+      
+      
+      return customInstance<void>(
+      {url: `/api/workspaces/${id}/members/${userId}`, method: 'DELETE'
+    },
+      );
+    }
+  
+
+
+export const getDeleteApiWorkspacesIdMembersUserIdMutationOptions = <TError = ForbiddenResponse | NotFoundResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteApiWorkspacesIdMembersUserId>>, TError,{id: string;userId: string}, TContext>, }
+): UseMutationOptions<Awaited<ReturnType<typeof deleteApiWorkspacesIdMembersUserId>>, TError,{id: string;userId: string}, TContext> => {
+
+const mutationKey = ['deleteApiWorkspacesIdMembersUserId'];
+const {mutation: mutationOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }};
+
+      
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteApiWorkspacesIdMembersUserId>>, {id: string;userId: string}> = (props) => {
+          const {id,userId} = props ?? {};
+
+          return  deleteApiWorkspacesIdMembersUserId(id,userId,)
+        }
+
+        
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteApiWorkspacesIdMembersUserIdMutationResult = NonNullable<Awaited<ReturnType<typeof deleteApiWorkspacesIdMembersUserId>>>
+    
+    export type DeleteApiWorkspacesIdMembersUserIdMutationError = ForbiddenResponse | NotFoundResponse
+
+    /**
+ * @summary Remove a workspace member
+ */
+export const useDeleteApiWorkspacesIdMembersUserId = <TError = ForbiddenResponse | NotFoundResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteApiWorkspacesIdMembersUserId>>, TError,{id: string;userId: string}, TContext>, }
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof deleteApiWorkspacesIdMembersUserId>>,
+        TError,
+        {id: string;userId: string},
+        TContext
+      > => {
+
+      const mutationOptions = getDeleteApiWorkspacesIdMembersUserIdMutationOptions(options);
 
       return useMutation(mutationOptions, queryClient);
     }

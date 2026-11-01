@@ -11,6 +11,7 @@ import {
   getGetApiTimersActiveQueryKey,
   getGetApiTimeEntriesQueryKey,
   TaskStatus,
+  AccessRole,
   type TimeEntry,
   type Task,
 } from "../api/generated";
@@ -21,6 +22,7 @@ import { useLiveElapsedSeconds } from "../hooks/useLiveElapsed";
 import { useActiveTimer } from "../hooks/useActiveTimer";
 import { useClickOutside } from "../hooks/useClickOutside";
 import { useToast } from "../context/ToastContext";
+import { useWorkspace } from "../context/WorkspaceContext";
 import { extractErrorMessage } from "../utils/errors";
 import { EditTimeEntryForm } from "./EditTimeEntryForm";
 import { TagEditor } from "./TagEditor";
@@ -63,9 +65,12 @@ export function TimeEntriesList({
   selectedEntryIds,
   onToggleIds,
 }: Props) {
+  const { role } = useWorkspace();
+  const canSeeAll = role === AccessRole.OWNER || role === AccessRole.ADMIN || role === AccessRole.WORKSPACE_ADMIN;
+
   const range = dateRange ? { from: dateRange.from.toISOString(), to: dateRange.to.toISOString() } : {};
-  const { data: entries, isLoading: entriesLoading } = useGetApiTimeEntries(range);
-  const { data: tasks, isLoading: tasksLoading } = useGetApiTasks({});
+  const { data: entries, isLoading: entriesLoading } = useGetApiTimeEntries({ ...range, all: canSeeAll });
+  const { data: tasks, isLoading: tasksLoading } = useGetApiTasks({ all: canSeeAll });
   const { data: projects } = useGetApiProjects();
   const activeTimer = useActiveTimer();
   const liveElapsed = useLiveElapsedSeconds(activeTimer?.started_at);

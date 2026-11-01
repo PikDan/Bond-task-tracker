@@ -14,6 +14,7 @@ tags:
   - name: Projects
   - name: Tasks
   - name: Timer
+  - name: Workspace
 
 paths:
   /healthz:
@@ -99,9 +100,97 @@ paths:
       summary: Delete a project
       description: >-
         Does not cascade-delete tasks in task_db (physically separate
-        database, no FK) — a known, accepted gap for now.
+        database, no FK) — a known, accepted gap for now. Requires
+        Owner/Admin/Workspace Admin — a project's Lead cannot delete it.
       responses:
         "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/projects/{id}/members:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    post:
+      tags: [Projects]
+      summary: Add a project participant
+      description: >-
+        Requires Owner/Admin/Workspace Admin, or this project's own Lead.
+        role defaults to MEMBER if omitted; requesting role=LEAD requires
+        Owner/Admin/Workspace Admin specifically — a Lead adding a
+        participant can never make them a co-Lead in the same call.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id: { type: string }
+                role: { $ref: "#/components/schemas/ProjectRole" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProjectMembership" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: user_id is already a participant in this project
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    get:
+      tags: [Projects]
+      summary: List project participants
+      description: Requires the same visibility bar as GET /api/projects/{id} (owner, Owner/Admin/Workspace Admin, or this project's Lead).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ProjectMembership" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/projects/{id}/members/{userId}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/MemberUserId"
+    patch:
+      tags: [Projects]
+      summary: Promote a participant to Lead, or demote a Lead to a plain participant
+      description: >-
+        The only way to change who holds LEAD — requires
+        Owner/Admin/Workspace Admin only, never the project's own Lead
+        ("Workspace Admin assigns Lead").
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { $ref: "#/components/schemas/ProjectRole" }
+      responses:
+        "204": { description: Role changed }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Projects]
+      summary: Remove a project participant
+      description: >-
+        Requires Owner/Admin/Workspace Admin, or this project's own Lead —
+        but a Lead cannot remove another Lead (or demote themselves this
+        way); only Owner/Admin/Workspace Admin can remove a LEAD row.
+      responses:
+        "204": { description: Removed }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /api/tasks:
@@ -142,6 +231,15 @@ paths:
           required: false
           description: Filter by project
           schema: { type: string, format: uuid }
+        - name: all
+          in: query
+          required: false
+          description: >-
+            When true, returns every task in the workspace instead of just
+            the caller's own — only takes effect when the caller's resolved
+            role is Owner/Admin/Workspace Admin; silently ignored for a
+            plain Member (not an error).
+          schema: { type: boolean }
       responses:
         "200":
           description: OK
@@ -314,6 +412,15 @@ paths:
           required: false
           description: Filter to entries belonging to a single task
           schema: { type: string, format: uuid }
+        - name: all
+          in: query
+          required: false
+          description: >-
+            When true, returns every entry in the workspace instead of just
+            the caller's own — only takes effect when the caller's resolved
+            role is Owner/Admin/Workspace Admin; silently ignored for a
+            plain Member (not an error).
+          schema: { type: boolean }
       responses:
         "200":
           description: OK
@@ -384,6 +491,368 @@ paths:
         "204": { description: Deleted }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/workspace-access:
+    get:
+      tags: [Workspace]
+      summary: Resolve the caller's role in a workspace
+      description: >-
+        The one endpoint every other service calls (via the optional
+        X-Workspace-Id header) to authorize a request. workspace_id is
+        optional here too — omit it to resolve (and lazily create, on first
+        use) the caller's default organization/workspace.
+      parameters:
+        - name: workspace_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Access" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/organizations:
+    post:
+      tags: [Workspace]
+      summary: Create an organization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, example: "Acme Inc" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Organization" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+    get:
+      tags: [Workspace]
+      summary: List organizations I belong to
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Organization" }
+
+  /api/organizations/{id}:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      tags: [Workspace]
+      summary: Get an organization
+      description: Requires the caller to belong to this org (any role).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Organization" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Workspace]
+      summary: Rename an organization
+      description: Requires OWNER or ADMIN.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, example: "Acme Holdings" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Organization" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Workspace]
+      summary: Delete an organization
+      description: Requires OWNER or ADMIN.
+      responses:
+        "204": { description: Deleted }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/organizations/{id}/transfer-owner:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    post:
+      tags: [Workspace]
+      summary: Transfer organization ownership to another member
+      description: >-
+        Only the current OWNER can call this. Demotes the caller to ADMIN and
+        promotes to_user_id to OWNER (must already be a member).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to_user_id]
+              properties:
+                to_user_id: { type: string }
+      responses:
+        "204": { description: Ownership transferred }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/organizations/{id}/members:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    post:
+      tags: [Workspace]
+      summary: Add an organization member
+      description: >-
+        Requires OWNER or ADMIN. Always grants ADMIN — OWNER is assigned
+        exactly once, at org creation, and moved only via transfer-owner.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id: { type: string }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrgMembership" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: user_id is already a member of this organization
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    get:
+      tags: [Workspace]
+      summary: List organization members
+      description: Requires the caller to belong to this org (any role).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/OrgMembership" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/organizations/{id}/members/{userId}:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/MemberUserId"
+    delete:
+      tags: [Workspace]
+      summary: Remove an organization member
+      description: >-
+        Requires OWNER or ADMIN. Returns 409 if userId is the org's OWNER —
+        transfer ownership first.
+      responses:
+        "204": { description: Removed }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Cannot remove the only owner — transfer ownership first
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/workspaces:
+    post:
+      tags: [Workspace]
+      summary: Create a workspace
+      description: Requires OWNER or ADMIN in org_id.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [org_id, name]
+              properties:
+                org_id: { type: string, format: uuid }
+                name: { type: string, example: "Marketing" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Workspace" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    get:
+      tags: [Workspace]
+      summary: List workspaces in an organization
+      description: Requires the caller to belong to org_id (any role).
+      parameters:
+        - name: org_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Workspace" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/workspaces/{id}:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+    get:
+      tags: [Workspace]
+      summary: Get a workspace
+      description: Requires any resolvable role in this workspace.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Workspace" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Workspace]
+      summary: Rename a workspace
+      description: Requires an OWNER/ADMIN/WORKSPACE_ADMIN role in this workspace.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, example: "Marketing (EU)" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Workspace" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Workspace]
+      summary: Delete a workspace
+      description: Requires an OWNER/ADMIN/WORKSPACE_ADMIN role in this workspace.
+      responses:
+        "204": { description: Deleted }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/workspaces/{id}/members:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+    post:
+      tags: [Workspace]
+      summary: Add a workspace member
+      description: >-
+        Requires an OWNER/ADMIN/WORKSPACE_ADMIN role in this workspace. role
+        defaults to MEMBER if omitted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id: { type: string }
+                role: { $ref: "#/components/schemas/WorkspaceRole" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkspaceMembership" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: user_id is already a member of this workspace
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    get:
+      tags: [Workspace]
+      summary: List workspace members
+      description: Requires any resolvable role in this workspace.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/WorkspaceMembership" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/workspaces/{id}/members/{userId}:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: "#/components/parameters/MemberUserId"
+    patch:
+      tags: [Workspace]
+      summary: Change a workspace member's role
+      description: Requires an OWNER/ADMIN/WORKSPACE_ADMIN role in this workspace.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { $ref: "#/components/schemas/WorkspaceRole" }
+      responses:
+        "204": { description: Role changed }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Workspace]
+      summary: Remove a workspace member
+      description: Requires an OWNER/ADMIN/WORKSPACE_ADMIN role in this workspace.
+      responses:
+        "204": { description: Removed }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
 components:
   securitySchemes:
     UserId:
@@ -403,6 +872,22 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid }
+    OrgId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    WorkspaceId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    MemberUserId:
+      name: userId
+      in: path
+      required: true
+      description: The member's user_id (not a membership row id).
+      schema: { type: string }
 
   responses:
     BadRequest:
@@ -412,6 +897,11 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
     NotFound:
       description: Not found (or belongs to a different user)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: Caller does not have the required role for this action
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -426,6 +916,10 @@ components:
       type: string
       enum: [HOLD, IN_PROGRESS, DONE]
 
+    ProjectRole:
+      type: string
+      enum: [LEAD, MEMBER]
+
     Project:
       type: object
       required: [id, user_id, name, created_at, updated_at]
@@ -435,6 +929,20 @@ components:
         name: { type: string }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+        my_role:
+          allOf: [{ $ref: "#/components/schemas/ProjectRole" }]
+          nullable: true
+          description: The caller's own participant role in this project, or null if they aren't one.
+
+    ProjectMembership:
+      type: object
+      required: [id, project_id, user_id, role, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        user_id: { type: string }
+        role: { $ref: "#/components/schemas/ProjectRole" }
+        created_at: { type: string, format: date-time }
 
     Task:
       type: object
@@ -481,3 +989,61 @@ components:
           type: integer
           format: int64
           nullable: true
+
+    OrgRole:
+      type: string
+      enum: [OWNER, ADMIN]
+
+    WorkspaceRole:
+      type: string
+      enum: [ADMIN, MEMBER]
+
+    Organization:
+      type: object
+      required: [id, name, owner_user_id, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        owner_user_id: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Workspace:
+      type: object
+      required: [id, org_id, name, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        name: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    OrgMembership:
+      type: object
+      required: [id, org_id, user_id, role, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        user_id: { type: string }
+        role: { $ref: "#/components/schemas/OrgRole" }
+        created_at: { type: string, format: date-time }
+
+    WorkspaceMembership:
+      type: object
+      required: [id, workspace_id, user_id, role, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        user_id: { type: string }
+        role: { $ref: "#/components/schemas/WorkspaceRole" }
+        created_at: { type: string, format: date-time }
+
+    Access:
+      type: object
+      required: [workspace_id, org_id, role]
+      properties:
+        workspace_id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        role:
+          type: string
+          enum: [OWNER, ADMIN, WORKSPACE_ADMIN, MEMBER]

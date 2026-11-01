@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cp src/api/generated.ts /tmp_generated_backup.ts)",
+      "Bash(npm run *)",
+      "Bash(npm -v)"
+    ]
+  }
+}

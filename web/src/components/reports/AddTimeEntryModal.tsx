@@ -12,6 +12,7 @@ import {
   getGetApiTasksQueryKey,
   getGetApiTimeEntriesQueryKey,
   getGetApiTimersActiveQueryKey,
+  AccessRole,
   type Task,
 } from "../../api/generated";
 import { Modal } from "../Modal";
@@ -19,6 +20,7 @@ import { ProjectPicker } from "../ProjectPicker";
 import { TagEditor, type TagEditorHandle } from "../TagEditor";
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { useToast } from "../../context/ToastContext";
+import { useWorkspace } from "../../context/WorkspaceContext";
 import { extractErrorMessage } from "../../utils/errors";
 import { formatDuration } from "../../utils/format";
 
@@ -43,7 +45,9 @@ function combine(date: string, time: string): Date {
 export function AddTimeEntryModal({ defaultProjectId = null, onClose, onSaved }: Props) {
   const queryClient = useQueryClient();
   const { show } = useToast();
-  const { data: tasks } = useGetApiTasks({});
+  const { role } = useWorkspace();
+  const canSeeAll = role === AccessRole.OWNER || role === AccessRole.ADMIN || role === AccessRole.WORKSPACE_ADMIN;
+  const { data: tasks } = useGetApiTasks({ all: canSeeAll });
   const { data: projects } = useGetApiProjects();
 
   const [title, setTitle] = useState("");

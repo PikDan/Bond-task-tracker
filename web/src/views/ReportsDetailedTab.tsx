@@ -9,11 +9,13 @@ import {
   getGetApiTimeEntriesQueryKey,
   getGetApiTimersActiveQueryKey,
   getGetApiTasksQueryKey,
+  AccessRole,
   type TimeEntry,
 } from "../api/generated";
 import { useActiveTimer } from "../hooks/useActiveTimer";
 import { useLiveElapsedSeconds } from "../hooks/useLiveElapsed";
 import { useToast } from "../context/ToastContext";
+import { useWorkspace } from "../context/WorkspaceContext";
 import { DateRangeBar } from "../components/DateRangeBar";
 import { BulkActionsBar } from "../components/BulkActionsBar";
 import { DeleteConfirmModal } from "../components/DeleteConfirmModal";
@@ -42,10 +44,12 @@ export function ReportsDetailedTab() {
   const [addModalOpen, setAddModalOpen] = useState(false);
 
   const { show } = useToast();
+  const { role } = useWorkspace();
+  const canSeeAll = role === AccessRole.OWNER || role === AccessRole.ADMIN || role === AccessRole.WORKSPACE_ADMIN;
 
   const range = dateRange ? { from: dateRange.from.toISOString(), to: dateRange.to.toISOString() } : {};
-  const { data: entries, isLoading: entriesLoading } = useGetApiTimeEntries(range);
-  const { data: tasks, isLoading: tasksLoading } = useGetApiTasks({});
+  const { data: entries, isLoading: entriesLoading } = useGetApiTimeEntries({ ...range, all: canSeeAll });
+  const { data: tasks, isLoading: tasksLoading } = useGetApiTasks({ all: canSeeAll });
   const { data: projects } = useGetApiProjects();
   const activeTimer = useActiveTimer();
   const liveElapsed = useLiveElapsedSeconds(activeTimer?.started_at);

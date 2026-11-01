@@ -18,6 +18,7 @@ func main() {
 
 	dsn := config.MustGetEnv("DATABASE_URL")
 	port := config.GetEnvOrDefault("PORT", "8081")
+	workspaceServiceURL := config.MustGetEnv("WORKSPACE_SERVICE_URL")
 
 	db, err := dbx.Open(dsn)
 	if err != nil {
@@ -31,7 +32,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	handler := project.NewHandler(project.NewService(project.NewRepository(db)))
+	workspaceClient := project.NewWorkspaceClient(workspaceServiceURL)
+	handler := project.NewHandler(project.NewService(project.NewRepository(db), workspaceClient))
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)

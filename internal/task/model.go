@@ -20,12 +20,13 @@ func (s Status) Valid() bool {
 }
 
 type Task struct {
-	ID        string    `json:"id"`
-	ProjectID *string   `json:"project_id"`
-	UserID    string    `json:"user_id"`
-	Title     string    `json:"title"`
-	Status    Status    `json:"status"`
-	Tags      []string  `json:"tags"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID          string    `json:"id"`
+	ProjectID   *string   `json:"project_id"`
+	UserID      string    `json:"user_id"`
+	WorkspaceID string    `json:"workspace_id"`
+	Title       string    `json:"title"`
+	Status      Status    `json:"status"`
+	Tags        []string  `json:"tags"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }

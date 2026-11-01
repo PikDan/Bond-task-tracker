@@ -28,10 +28,10 @@ func NewRepository(db *sql.DB) *Repository {
 func (r *Repository) StartActive(ctx context.Context, e *TimeEntry) error {
 	e.ID = uuid.NewString()
 	const q = `
-		INSERT INTO time_entries (id, user_id, task_id, task_name, project_id, description)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO time_entries (id, user_id, task_id, task_name, project_id, workspace_id, description)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING started_at`
-	err := r.db.QueryRowContext(ctx, q, e.ID, e.UserID, e.TaskID, e.TaskName, e.ProjectID, e.Description).Scan(&e.StartedAt)
+	err := r.db.QueryRowContext(ctx, q, e.ID, e.UserID, e.TaskID, e.TaskName, e.ProjectID, e.WorkspaceID, e.Description).Scan(&e.StartedAt)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == uniqueViolationCode {
@@ -52,10 +52,10 @@ func (r *Repository) StopActive(ctx context.Context, userID, taskID string) (*Ti
 		SET ended_at = now(),
 		    duration_seconds = EXTRACT(EPOCH FROM (now() - started_at))::BIGINT
 		WHERE user_id = $1 AND task_id = $2 AND ended_at IS NULL
-		RETURNING id, user_id, task_id, task_name, project_id, description, started_at, ended_at, duration_seconds`
+		RETURNING id, user_id, task_id, task_name, project_id, workspace_id, description, started_at, ended_at, duration_seconds`
 	e := &TimeEntry{}
 	err := r.db.QueryRowContext(ctx, q, userID, taskID).Scan(
-		&e.ID, &e.UserID, &e.TaskID, &e.TaskName, &e.ProjectID, &e.Description,
+		&e.ID, &e.UserID, &e.TaskID, &e.TaskName, &e.ProjectID, &e.WorkspaceID, &e.Description,
 		&e.StartedAt, &e.EndedAt, &e.DurationSeconds)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNoActiveTimer
@@ -75,16 +75,19 @@ func (r *Repository) StopActive(ctx context.Context, userID, taskID string) (*Ti
 // touch the partial unique index's invariant either: that index only cares
 // about how many rows have ended_at IS NULL for a given user_id, which this
 // never changes.
+// UpdateTimes assumes the caller (Service.UpdateTimes) has already verified
+// the acting user may touch this entry (owner, or CanManageWorkspace) — the
+// workspace_id filter here is defense-in-depth, not the primary check.
 func (r *Repository) UpdateTimes(ctx context.Context, e *TimeEntry) error {
 	const q = `
 		UPDATE time_entries
 		SET started_at = $1, ended_at = $2, duration_seconds = $3,
-		    task_id = $4, task_name = $5, project_id = $6
-		WHERE id = $7 AND user_id = $8`
+		    task_id = $4, task_name = $5, project_id = $6, workspace_id = $7
+		WHERE id = $8 AND workspace_id = $9`
 	res, err := r.db.ExecContext(ctx, q,
 		e.StartedAt, e.EndedAt, e.DurationSeconds,
-		e.TaskID, e.TaskName, e.ProjectID,
-		e.ID, e.UserID)
+		e.TaskID, e.TaskName, e.ProjectID, e.WorkspaceID,
+		e.ID, e.WorkspaceID)
 	if err != nil {
 		return err
 	}
@@ -98,9 +101,12 @@ func (r *Repository) UpdateTimes(ctx context.Context, e *TimeEntry) error {
 	return nil
 }
 
-func (r *Repository) Delete(ctx context.Context, id, userID string) error {
-	const q = `DELETE FROM time_entries WHERE id = $1 AND user_id = $2`
-	res, err := r.db.ExecContext(ctx, q, id, userID)
+// Delete assumes the caller (Service.Delete) has already verified the
+// acting user may touch this entry — same defense-in-depth workspace_id
+// filter as UpdateTimes.
+func (r *Repository) Delete(ctx context.Context, id, workspaceID string) error {
+	const q = `DELETE FROM time_entries WHERE id = $1 AND workspace_id = $2`
+	res, err := r.db.ExecContext(ctx, q, id, workspaceID)
 	if err != nil {
 		return err
 	}
@@ -116,11 +122,11 @@ func (r *Repository) Delete(ctx context.Context, id, userID string) error {
 
 func (r *Repository) GetActive(ctx context.Context, userID string) (*TimeEntry, error) {
 	const q = `
-		SELECT id, user_id, task_id, task_name, project_id, description, started_at, ended_at, duration_seconds
+		SELECT id, user_id, task_id, task_name, project_id, workspace_id, description, started_at, ended_at, duration_seconds
 		FROM time_entries WHERE user_id = $1 AND ended_at IS NULL`
 	e := &TimeEntry{}
 	err := r.db.QueryRowContext(ctx, q, userID).Scan(
-		&e.ID, &e.UserID, &e.TaskID, &e.TaskName, &e.ProjectID, &e.Description,
+		&e.ID, &e.UserID, &e.TaskID, &e.TaskName, &e.ProjectID, &e.WorkspaceID, &e.Description,
 		&e.StartedAt, &e.EndedAt, &e.DurationSeconds)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNoActiveTimer
@@ -131,13 +137,16 @@ func (r *Repository) GetActive(ctx context.Context, userID string) (*TimeEntry, 
 	return e, nil
 }
 
+// Get looks up an entry by id only (no owner/workspace filter) — callers
+// that need ownership/workspace enforcement compare the returned fields
+// themselves (see Service.Get/Delete/UpdateTimes).
 func (r *Repository) Get(ctx context.Context, id string) (*TimeEntry, error) {
 	const q = `
-		SELECT id, user_id, task_id, task_name, project_id, description, started_at, ended_at, duration_seconds
+		SELECT id, user_id, task_id, task_name, project_id, workspace_id, description, started_at, ended_at, duration_seconds
 		FROM time_entries WHERE id = $1`
 	e := &TimeEntry{}
 	err := r.db.QueryRowContext(ctx, q, id).Scan(
-		&e.ID, &e.UserID, &e.TaskID, &e.TaskName, &e.ProjectID, &e.Description,
+		&e.ID, &e.UserID, &e.TaskID, &e.TaskName, &e.ProjectID, &e.WorkspaceID, &e.Description,
 		&e.StartedAt, &e.EndedAt, &e.DurationSeconds)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -148,11 +157,31 @@ func (r *Repository) Get(ctx context.Context, id string) (*TimeEntry, error) {
 	return e, nil
 }
 
-func (r *Repository) List(ctx context.Context, userID string, from, to *time.Time, taskID string) ([]*TimeEntry, error) {
+// List stays private to userID within workspaceID — the default for
+// Member. See ListByWorkspace for the "everyone in the workspace" mode
+// available to CanSeeAllInWorkspace roles.
+func (r *Repository) List(ctx context.Context, workspaceID, userID string, from, to *time.Time, taskID string) ([]*TimeEntry, error) {
 	q := `
-		SELECT id, user_id, task_id, task_name, project_id, description, started_at, ended_at, duration_seconds
-		FROM time_entries WHERE user_id = $1`
-	args := []any{userID}
+		SELECT id, user_id, task_id, task_name, project_id, workspace_id, description, started_at, ended_at, duration_seconds
+		FROM time_entries WHERE workspace_id = $1 AND user_id = $2`
+	args := []any{workspaceID, userID}
+	q, args = appendListFilters(q, args, from, to, taskID)
+	return r.queryEntries(ctx, q, args...)
+}
+
+// ListByWorkspace returns every entry in workspaceID regardless of owner —
+// gated server-side by CanSeeAllInWorkspace in Service.List, never by
+// anything the client can force on its own.
+func (r *Repository) ListByWorkspace(ctx context.Context, workspaceID string, from, to *time.Time, taskID string) ([]*TimeEntry, error) {
+	q := `
+		SELECT id, user_id, task_id, task_name, project_id, workspace_id, description, started_at, ended_at, duration_seconds
+		FROM time_entries WHERE workspace_id = $1`
+	args := []any{workspaceID}
+	q, args = appendListFilters(q, args, from, to, taskID)
+	return r.queryEntries(ctx, q, args...)
+}
+
+func appendListFilters(q string, args []any, from, to *time.Time, taskID string) (string, []any) {
 	if from != nil {
 		args = append(args, *from)
 		q += fmt.Sprintf(" AND started_at >= $%d", len(args))
@@ -165,8 +194,10 @@ func (r *Repository) List(ctx context.Context, userID string, from, to *time.Tim
 		args = append(args, taskID)
 		q += fmt.Sprintf(" AND task_id = $%d", len(args))
 	}
-	q += " ORDER BY started_at DESC"
+	return q + " ORDER BY started_at DESC", args
+}
 
+func (r *Repository) queryEntries(ctx context.Context, q string, args ...any) ([]*TimeEntry, error) {
 	rows, err := r.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -176,7 +207,7 @@ func (r *Repository) List(ctx context.Context, userID string, from, to *time.Tim
 	entries := []*TimeEntry{}
 	for rows.Next() {
 		e := &TimeEntry{}
-		if err := rows.Scan(&e.ID, &e.UserID, &e.TaskID, &e.TaskName, &e.ProjectID, &e.Description,
+		if err := rows.Scan(&e.ID, &e.UserID, &e.TaskID, &e.TaskName, &e.ProjectID, &e.WorkspaceID, &e.Description,
 			&e.StartedAt, &e.EndedAt, &e.DurationSeconds); err != nil {
 			return nil, err
 		}

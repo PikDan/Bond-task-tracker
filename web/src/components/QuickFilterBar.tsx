@@ -1,8 +1,9 @@
 import { useMemo, useRef, useState } from "react";
 import { ListTodo, Folder, Tags as TagsIcon } from "lucide-react";
-import { useGetApiProjects, useGetApiTasks, type Project } from "../api/generated";
+import { useGetApiProjects, useGetApiTasks, AccessRole, type Project } from "../api/generated";
 import { colorForId } from "../utils/projectColor";
 import { useClickOutside } from "../hooks/useClickOutside";
+import { useWorkspace } from "../context/WorkspaceContext";
 import { ProjectPicker } from "./ProjectPicker";
 
 interface Props {
@@ -22,8 +23,10 @@ export function QuickFilterBar({
   tagFilter,
   onTagFilterChange,
 }: Props) {
+  const { role } = useWorkspace();
+  const canSeeAll = role === AccessRole.OWNER || role === AccessRole.ADMIN || role === AccessRole.WORKSPACE_ADMIN;
   const { data: projects } = useGetApiProjects();
-  const { data: tasks } = useGetApiTasks({});
+  const { data: tasks } = useGetApiTasks({ all: canSeeAll });
 
   const selectedProject = projects?.find((p) => p.id === projectFilter);
   const allTags = useMemo(() => Array.from(new Set((tasks ?? []).flatMap((t) => t.tags))).sort(), [tasks]);

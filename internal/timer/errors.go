@@ -10,4 +10,7 @@ var (
 	ErrTaskMismatch      = errors.New("active timer belongs to a different task")
 	ErrInvalidTimeRange  = errors.New("ended_at must be after started_at")
 	ErrInvalidTaskID     = errors.New("task_id must not be empty")
+	// ErrForbidden covers both "no access to this workspace at all" (from
+	// WorkspaceClient.ResolveAccess) and "access, but not enough role".
+	ErrForbidden = errors.New("forbidden")
 )

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useUser } from "./context/UserContext";
 import { UserSwitcher } from "./components/UserSwitcher";
+import { WorkspaceSwitcher } from "./components/WorkspaceSwitcher";
 import { NavSidebar } from "./components/NavSidebar";
 import { ActiveTimerBar } from "./components/ActiveTimerBar";
 import { ToastViewport } from "./components/ToastViewport";
@@ -30,7 +31,10 @@ export default function App() {
       <ToastViewport />
       <header className="flex items-center justify-between border-b border-neutral-800 px-4 py-3">
         <h1 className="text-lg font-semibold">Time Tracker</h1>
-        <UserSwitcher />
+        <div className="flex items-center gap-3">
+          <WorkspaceSwitcher />
+          <UserSwitcher />
+        </div>
       </header>
 
       <ActiveTimerBar />

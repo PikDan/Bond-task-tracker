@@ -10,12 +10,13 @@ import {
   subWeeks,
 } from "date-fns";
 import type { DateRange as RdpDateRange } from "react-day-picker";
-import { useGetApiTimeEntries, type TimeEntry } from "../api/generated";
+import { useGetApiTimeEntries, AccessRole, type TimeEntry } from "../api/generated";
 import { Calendar } from "./Calendar";
 import { formatDuration } from "../utils/format";
 import { useLiveElapsedSeconds } from "../hooks/useLiveElapsed";
 import { useActiveTimer } from "../hooks/useActiveTimer";
 import { useClickOutside } from "../hooks/useClickOutside";
+import { useWorkspace } from "../context/WorkspaceContext";
 import type { DateRange } from "../types";
 
 type DateMode = "today" | "yesterday" | "week" | "lastWeek" | "last30" | "all";
@@ -107,15 +108,22 @@ export function DateRangeBar({ dateRange, onChange }: Props) {
   const todayRange = useMemo(() => rangeForMode("today")!, []);
   const weekRange = useMemo(() => rangeForMode("week")!, []);
 
+  const { role } = useWorkspace();
+  const canSeeAll = role === AccessRole.OWNER || role === AccessRole.ADMIN || role === AccessRole.WORKSPACE_ADMIN;
+
   // Today/Week totals are fetched independently of the currently selected
   // date filter, so they stay accurate no matter what the list below shows.
+  // Must agree with the main list's own all= choice, or the totals and the
+  // visible rows would silently disagree for a privileged role.
   const { data: todayEntries } = useGetApiTimeEntries({
     from: todayRange.from.toISOString(),
     to: todayRange.to.toISOString(),
+    all: canSeeAll,
   });
   const { data: weekEntries } = useGetApiTimeEntries({
     from: weekRange.from.toISOString(),
     to: weekRange.to.toISOString(),
+    all: canSeeAll,
   });
   const activeTimer = useActiveTimer();
   const liveElapsed = useLiveElapsedSeconds(activeTimer?.started_at);

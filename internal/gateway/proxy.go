@@ -13,9 +13,10 @@ import (
 // carries no business logic of its own — just path-based routing (and, once
 // auth exists, that's the natural place for JWT validation to live).
 type Targets struct {
-	ProjectServiceURL string
-	TaskServiceURL    string
-	TimerServiceURL   string
+	ProjectServiceURL   string
+	TaskServiceURL      string
+	TimerServiceURL     string
+	WorkspaceServiceURL string
 }
 
 func Routes(r chi.Router, t Targets) error {
@@ -31,6 +32,10 @@ func Routes(r chi.Router, t Targets) error {
 	if err != nil {
 		return err
 	}
+	workspaceProxy, err := newProxy(t.WorkspaceServiceURL)
+	if err != nil {
+		return err
+	}
 
 	r.Handle("/api/projects", projectProxy)
 	r.Handle("/api/projects/*", projectProxy)
@@ -39,6 +44,11 @@ func Routes(r chi.Router, t Targets) error {
 	r.Handle("/api/timers/*", timerProxy)
 	r.Handle("/api/time-entries", timerProxy)
 	r.Handle("/api/time-entries/*", timerProxy)
+	r.Handle("/api/workspace-access", workspaceProxy)
+	r.Handle("/api/organizations", workspaceProxy)
+	r.Handle("/api/organizations/*", workspaceProxy)
+	r.Handle("/api/workspaces", workspaceProxy)
+	r.Handle("/api/workspaces/*", workspaceProxy)
 
 	return nil
 }

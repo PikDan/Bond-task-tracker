@@ -47,6 +47,35 @@ services:
       timeout: 5s
       retries: 10
 
+  workspace-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: workspace_db
+      POSTGRES_USER: workspace
+      POSTGRES_PASSWORD: workspace
+    ports:
+      - "5436:5432"
+    volumes:
+      - workspace_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U workspace -d workspace_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  workspace-service:
+    build:
+      context: .
+      dockerfile: deploy/workspace-service.Dockerfile
+    environment:
+      DATABASE_URL: postgres://workspace:workspace@workspace-db:5432/workspace_db?sslmode=disable
+      PORT: "8084"
+    depends_on:
+      workspace-db:
+        condition: service_healthy
+    ports:
+      - "8084:8084"
+
   project-service:
     build:
       context: .
@@ -54,9 +83,12 @@ services:
     environment:
       DATABASE_URL: postgres://project:project@project-db:5432/project_db?sslmode=disable
       PORT: "8081"
+      WORKSPACE_SERVICE_URL: http://workspace-service:8084
     depends_on:
       project-db:
         condition: service_healthy
+      workspace-service:
+        condition: service_started
     ports:
       - "8081:8081"
 
@@ -68,10 +100,13 @@ services:
       DATABASE_URL: postgres://task:task@task-db:5432/task_db?sslmode=disable
       PORT: "8082"
       PROJECT_SERVICE_URL: http://project-service:8081
+      WORKSPACE_SERVICE_URL: http://workspace-service:8084
     depends_on:
       task-db:
         condition: service_healthy
       project-service:
+        condition: service_started
+      workspace-service:
         condition: service_started
     ports:
       - "8082:8082"
@@ -84,10 +119,16 @@ services:
       DATABASE_URL: postgres://timer:timer@timer-db:5432/timer_db?sslmode=disable
       PORT: "8083"
       TASK_SERVICE_URL: http://task-service:8082
+      WORKSPACE_SERVICE_URL: http://workspace-service:8084
+      PROJECT_SERVICE_URL: http://project-service:8081
     depends_on:
       timer-db:
         condition: service_healthy
       task-service:
+        condition: service_started
+      workspace-service:
+        condition: service_started
+      project-service:
         condition: service_started
     ports:
       - "8083:8083"
@@ -101,6 +142,7 @@ services:
       PROJECT_SERVICE_URL: http://project-service:8081
       TASK_SERVICE_URL: http://task-service:8082
       TIMER_SERVICE_URL: http://timer-service:8083
+      WORKSPACE_SERVICE_URL: http://workspace-service:8084
       # localhost:5173 is what a real browser on the host uses; web:5173 is
       # only for automated/headless testing that runs inside the compose
       # network instead of on the host (e.g. a Playwright container).
@@ -109,6 +151,7 @@ services:
       - project-service
       - task-service
       - timer-service
+      - workspace-service
     ports:
       - "8080:8080"
 
@@ -128,4 +171,5 @@ volumes:
   project_db_data:
   task_db_data:
   timer_db_data:
+  workspace_db_data:
   web_node_modules:

@@ -7,22 +7,35 @@ import {
   useGetApiTasks,
   useGetApiTimeEntries,
   usePostApiProjects,
+  usePatchApiProjectsId,
+  useDeleteApiProjectsId,
   getGetApiProjectsQueryKey,
+  AccessRole,
+  ProjectRole,
+  type Project,
 } from "../api/generated";
 import { colorForId } from "../utils/projectColor";
 import { extractErrorMessage } from "../utils/errors";
 import { Modal } from "../components/Modal";
+import { DeleteConfirmModal } from "../components/DeleteConfirmModal";
+import { ProjectMembersModal } from "../components/members/ProjectMembersModal";
 import { formatDuration } from "../utils/format";
 import { useClickOutside } from "../hooks/useClickOutside";
+import { useWorkspace } from "../context/WorkspaceContext";
 
 export function ProjectsView() {
   const queryClient = useQueryClient();
+  const { role } = useWorkspace();
+  const canManageWorkspace = role === AccessRole.OWNER || role === AccessRole.ADMIN || role === AccessRole.WORKSPACE_ADMIN;
   const { data: projects, isLoading } = useGetApiProjects();
-  const { data: tasks } = useGetApiTasks({});
-  const { data: entries } = useGetApiTimeEntries({});
+  const { data: tasks } = useGetApiTasks({ all: canManageWorkspace });
+  const { data: entries } = useGetApiTimeEntries({ all: canManageWorkspace });
   const [modalOpen, setModalOpen] = useState(false);
   const [name, setName] = useState("");
   const [nameQuery, setNameQuery] = useState("");
+  const [managingProject, setManagingProject] = useState<Project | null>(null);
+  const [renamingProject, setRenamingProject] = useState<{ id: string; name: string } | null>(null);
+  const [pendingDeleteProject, setPendingDeleteProject] = useState<Project | null>(null);
 
   const createProject = usePostApiProjects({
     mutation: {
@@ -30,6 +43,24 @@ export function ProjectsView() {
         queryClient.invalidateQueries({ queryKey: getGetApiProjectsQueryKey() });
         setName("");
         setModalOpen(false);
+      },
+    },
+  });
+
+  const renameProject = usePatchApiProjectsId({
+    mutation: {
+      onSuccess: () => {
+        queryClient.invalidateQueries({ queryKey: getGetApiProjectsQueryKey() });
+        setRenamingProject(null);
+      },
+    },
+  });
+
+  const deleteProject = useDeleteApiProjectsId({
+    mutation: {
+      onSuccess: () => {
+        queryClient.invalidateQueries({ queryKey: getGetApiProjectsQueryKey() });
+        setPendingDeleteProject(null);
       },
     },
   });
@@ -138,26 +169,116 @@ export function ProjectsView() {
               <th className="py-2 font-medium">Created</th>
               <th className="py-2 font-medium">Tasks count</th>
               <th className="py-2 font-medium">Time spent</th>
+              <th className="py-2 font-medium" />
             </tr>
           </thead>
           <tbody>
-            {filteredProjects.map((project) => (
-              <tr key={project.id} className="border-b border-neutral-800/60">
-                <td className="py-2">
-                  <span className="flex items-center gap-2">
-                    <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: colorForId(project.id) }} />
-                    {project.name}
-                  </span>
-                </td>
-                <td className="py-2 text-neutral-400">{format(new Date(project.created_at), "dd MMM yyyy")}</td>
-                <td className="py-2 text-neutral-400">{taskCountByProject.get(project.id) ?? 0}</td>
-                <td className="py-2 font-mono text-neutral-400">
-                  {formatDuration(timeSpentByProject.get(project.id) ?? 0)}
-                </td>
-              </tr>
-            ))}
+            {filteredProjects.map((project) => {
+              const canManageThisProject = canManageWorkspace || project.my_role === ProjectRole.LEAD;
+              const isRenaming = renamingProject?.id === project.id;
+              return (
+                <tr key={project.id} className="border-b border-neutral-800/60">
+                  <td className="py-2">
+                    {isRenaming ? (
+                      <form
+                        className="flex items-center gap-2"
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          const trimmed = renamingProject.name.trim();
+                          if (!trimmed) return;
+                          renameProject.mutate({ id: project.id, data: { name: trimmed } });
+                        }}
+                      >
+                        <input
+                          autoFocus
+                          value={renamingProject.name}
+                          onChange={(e) => setRenamingProject({ id: project.id, name: e.target.value })}
+                          className="w-full rounded border border-neutral-700 bg-neutral-800 px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        />
+                        <button
+                          type="submit"
+                          disabled={renameProject.isPending}
+                          className="rounded bg-blue-600 px-2 py-1 text-xs hover:bg-blue-500 disabled:opacity-50"
+                        >
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setRenamingProject(null)}
+                          className="rounded border border-neutral-700 px-2 py-1 text-xs hover:bg-neutral-800"
+                        >
+                          Cancel
+                        </button>
+                      </form>
+                    ) : (
+                      <span className="flex items-center gap-2">
+                        <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: colorForId(project.id) }} />
+                        {project.name}
+                        {project.my_role === ProjectRole.LEAD && (
+                          <span className="rounded-full bg-blue-500/10 px-1.5 text-[10px] text-blue-300">Lead</span>
+                        )}
+                      </span>
+                    )}
+                  </td>
+                  <td className="py-2 text-neutral-400">{format(new Date(project.created_at), "dd MMM yyyy")}</td>
+                  <td className="py-2 text-neutral-400">{taskCountByProject.get(project.id) ?? 0}</td>
+                  <td className="py-2 font-mono text-neutral-400">
+                    {formatDuration(timeSpentByProject.get(project.id) ?? 0)}
+                  </td>
+                  <td className="py-2 text-right">
+                    {!isRenaming && (
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          onClick={() => setManagingProject(project)}
+                          className="rounded border border-neutral-700 px-2 py-1 text-xs hover:bg-neutral-800"
+                        >
+                          Participants
+                        </button>
+                        {canManageThisProject && (
+                          <button
+                            onClick={() => setRenamingProject({ id: project.id, name: project.name })}
+                            className="rounded border border-neutral-700 px-2 py-1 text-xs hover:bg-neutral-800"
+                          >
+                            Rename
+                          </button>
+                        )}
+                        {canManageWorkspace && (
+                          <button
+                            onClick={() => setPendingDeleteProject(project)}
+                            className="rounded border border-neutral-700 px-2 py-1 text-xs hover:bg-neutral-800"
+                          >
+                            Delete
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
+      )}
+      {renameProject.isError && (
+        <p className="mt-2 text-xs text-red-400">
+          {extractErrorMessage(renameProject.error, "Could not rename project")}
+        </p>
+      )}
+
+      {managingProject && (
+        <ProjectMembersModal
+          project={managingProject}
+          canManageWorkspace={canManageWorkspace}
+          onClose={() => setManagingProject(null)}
+        />
+      )}
+      {pendingDeleteProject && (
+        <DeleteConfirmModal
+          count={1}
+          isPending={deleteProject.isPending}
+          onCancel={() => setPendingDeleteProject(null)}
+          onConfirm={() => deleteProject.mutate({ id: pendingDeleteProject.id })}
+        />
       )}
     </div>
   );

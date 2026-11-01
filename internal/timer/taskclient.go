@@ -34,21 +34,32 @@ type TaskInfo struct {
 	ProjectID *string
 	TaskName  string
 	Status    string
+	// WorkspaceID is what a new TimeEntry's own WorkspaceID gets set
+	// from — a time entry always inherits its workspace from the task
+	// it's logged against, never from the caller directly.
+	WorkspaceID string
 }
 
 type taskView struct {
-	ProjectID *string `json:"project_id"`
-	Title     string  `json:"title"`
-	Status    string  `json:"status"`
+	ProjectID   *string `json:"project_id"`
+	Title       string  `json:"title"`
+	Status      string  `json:"status"`
+	WorkspaceID string  `json:"workspace_id"`
 }
 
-// GetTask verifies taskID exists and belongs to userID, returning its project_id, title and status.
-func (c *TaskClient) GetTask(ctx context.Context, taskID, userID string) (*TaskInfo, error) {
+// GetTask verifies taskID exists and belongs to userID within workspaceID,
+// returning its project_id, title, status, and workspace_id. workspaceID is
+// the caller's own already-resolved workspace (from Service's
+// WorkspaceClient.ResolveAccess) — forwarded here as X-Workspace-Id so Task
+// Service resolves access against that exact same workspace rather than
+// independently falling back to its own default.
+func (c *TaskClient) GetTask(ctx context.Context, taskID, workspaceID, userID string) (*TaskInfo, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/tasks/"+taskID, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("X-User-Id", userID)
+	req.Header.Set("X-Workspace-Id", workspaceID)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -62,7 +73,7 @@ func (c *TaskClient) GetTask(ctx context.Context, taskID, userID string) (*TaskI
 		if err := json.NewDecoder(resp.Body).Decode(&t); err != nil {
 			return nil, fmt.Errorf("decode task-service response: %w", err)
 		}
-		return &TaskInfo{ProjectID: t.ProjectID, TaskName: t.Title, Status: t.Status}, nil
+		return &TaskInfo{ProjectID: t.ProjectID, TaskName: t.Title, Status: t.Status, WorkspaceID: t.WorkspaceID}, nil
 	case http.StatusNotFound:
 		return nil, ErrTaskNotFound
 	default:
@@ -73,13 +84,14 @@ func (c *TaskClient) GetTask(ctx context.Context, taskID, userID string) (*TaskI
 // SetStatus moves a task to the given status. Called as a best-effort side
 // effect of starting/stopping a timer — a failure here does not roll back
 // the timer action that already succeeded.
-func (c *TaskClient) SetStatus(ctx context.Context, taskID, userID, status string) error {
+func (c *TaskClient) SetStatus(ctx context.Context, taskID, workspaceID, userID, status string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, c.baseURL+"/tasks/"+taskID,
 		strings.NewReader(`{"status":"`+status+`"}`))
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("X-User-Id", userID)
+	req.Header.Set("X-Workspace-Id", workspaceID)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.http.Do(req)

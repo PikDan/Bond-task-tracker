@@ -1,8 +1,9 @@
 import { useMemo, useState } from "react";
 import { differenceInCalendarDays } from "date-fns";
-import { useGetApiTimeEntries, useGetApiTasks, useGetApiProjects } from "../api/generated";
+import { useGetApiTimeEntries, useGetApiTasks, useGetApiProjects, AccessRole } from "../api/generated";
 import { useActiveTimer } from "../hooks/useActiveTimer";
 import { useLiveElapsedSeconds } from "../hooks/useLiveElapsed";
+import { useWorkspace } from "../context/WorkspaceContext";
 import { DateRangeBar } from "../components/DateRangeBar";
 import { ReportsFilterBar } from "../components/reports/ReportsFilterBar";
 import { StatCards } from "../components/reports/StatCards";
@@ -21,9 +22,12 @@ export function ReportsSummaryTab() {
   const [stackBy, setStackBy] = useState<GroupDimension>("task");
   const [sliceBy, setSliceBy] = useState<GroupDimension>("project");
 
+  const { role } = useWorkspace();
+  const canSeeAll = role === AccessRole.OWNER || role === AccessRole.ADMIN || role === AccessRole.WORKSPACE_ADMIN;
+
   const range = dateRange ? { from: dateRange.from.toISOString(), to: dateRange.to.toISOString() } : {};
-  const { data: entries, isLoading: entriesLoading } = useGetApiTimeEntries(range);
-  const { data: tasks, isLoading: tasksLoading } = useGetApiTasks({});
+  const { data: entries, isLoading: entriesLoading } = useGetApiTimeEntries({ ...range, all: canSeeAll });
+  const { data: tasks, isLoading: tasksLoading } = useGetApiTasks({ all: canSeeAll });
   const { data: projects } = useGetApiProjects();
   const activeTimer = useActiveTimer();
   const liveElapsed = useLiveElapsedSeconds(activeTimer?.started_at);

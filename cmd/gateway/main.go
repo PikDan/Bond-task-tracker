@@ -19,9 +19,10 @@ func main() {
 
 	port := config.GetEnvOrDefault("PORT", "8080")
 	targets := gateway.Targets{
-		ProjectServiceURL: config.MustGetEnv("PROJECT_SERVICE_URL"),
-		TaskServiceURL:    config.MustGetEnv("TASK_SERVICE_URL"),
-		TimerServiceURL:   config.MustGetEnv("TIMER_SERVICE_URL"),
+		ProjectServiceURL:   config.MustGetEnv("PROJECT_SERVICE_URL"),
+		TaskServiceURL:      config.MustGetEnv("TASK_SERVICE_URL"),
+		TimerServiceURL:     config.MustGetEnv("TIMER_SERVICE_URL"),
+		WorkspaceServiceURL: config.MustGetEnv("WORKSPACE_SERVICE_URL"),
 	}
 
 	r := chi.NewRouter()
@@ -30,9 +31,12 @@ func main() {
 	// Frontend dev server (Vite, localhost:5173) is a different origin than
 	// the Gateway (localhost:8080) — browsers enforce CORS for that.
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   strings.Split(config.GetEnvOrDefault("CORS_ALLOWED_ORIGINS", "http://localhost:5173"), ","),
-		AllowedMethods:   []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Content-Type", "X-User-Id"},
+		AllowedOrigins: strings.Split(config.GetEnvOrDefault("CORS_ALLOWED_ORIGINS", "http://localhost:5173"), ","),
+		AllowedMethods: []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
+		// X-Workspace-Id is optional and additive — no client sends it yet
+		// (the frontend still only sends X-User-Id), but it's whitelisted now
+		// so a future workspace-aware frontend doesn't also need a CORS fix.
+		AllowedHeaders:   []string{"Content-Type", "X-User-Id", "X-Workspace-Id"},
 		AllowCredentials: false,
 		MaxAge:           300,
 	}))

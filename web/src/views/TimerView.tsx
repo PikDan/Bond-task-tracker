@@ -16,9 +16,11 @@ import {
   getGetApiTimeEntriesQueryKey,
   getGetApiTimersActiveQueryKey,
   getGetApiTasksQueryKey,
+  AccessRole,
 } from "../api/generated";
 import { dayKey } from "../utils/format";
 import { useToast } from "../context/ToastContext";
+import { useWorkspace } from "../context/WorkspaceContext";
 import type { DateRange } from "../types";
 
 export function TimerView() {
@@ -32,6 +34,8 @@ export function TimerView() {
 
   const queryClient = useQueryClient();
   const { show } = useToast();
+  const { role } = useWorkspace();
+  const canSeeAll = role === AccessRole.OWNER || role === AccessRole.ADMIN || role === AccessRole.WORKSPACE_ADMIN;
 
   // Same range shape TimeEntriesList requests — React Query dedupes this
   // against that component's own fetch, so this doesn't cause an extra
@@ -39,8 +43,8 @@ export function TimerView() {
   // cross-day bulk-edit guard), to bulk-delete by id, and to build the
   // bulk-edit modals' data.
   const range = dateRange ? { from: dateRange.from.toISOString(), to: dateRange.to.toISOString() } : {};
-  const { data: entries } = useGetApiTimeEntries(range);
-  const { data: tasks } = useGetApiTasks({});
+  const { data: entries } = useGetApiTimeEntries({ ...range, all: canSeeAll });
+  const { data: tasks } = useGetApiTasks({ all: canSeeAll });
   const entriesById = useMemo(() => new Map((entries ?? []).map((e) => [e.id, e])), [entries]);
   const tasksById = useMemo(() => new Map((tasks ?? []).map((t) => [t.id, t])), [tasks]);
 

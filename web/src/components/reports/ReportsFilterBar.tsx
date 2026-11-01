@@ -1,8 +1,9 @@
 import { useRef, useState } from "react";
 import { ListTodo, Folder, Tags as TagsIcon, Users } from "lucide-react";
-import { useGetApiProjects, useGetApiTasks, type Project, type Task } from "../../api/generated";
+import { useGetApiProjects, useGetApiTasks, AccessRole, type Project, type Task } from "../../api/generated";
 import { colorForId } from "../../utils/projectColor";
 import { useClickOutside } from "../../hooks/useClickOutside";
+import { useWorkspace } from "../../context/WorkspaceContext";
 import { ProjectPicker } from "../ProjectPicker";
 
 interface Props {
@@ -28,8 +29,10 @@ export function ReportsFilterBar({
   tagFilter,
   onTagFilterChange,
 }: Props) {
+  const { role } = useWorkspace();
+  const canSeeAll = role === AccessRole.OWNER || role === AccessRole.ADMIN || role === AccessRole.WORKSPACE_ADMIN;
   const { data: projects } = useGetApiProjects();
-  const { data: tasks } = useGetApiTasks({});
+  const { data: tasks } = useGetApiTasks({ all: canSeeAll });
 
   const selectedProject = projects?.find((p) => p.id === projectFilter);
   const selectedTask = tasks?.find((t) => t.id === taskFilter);

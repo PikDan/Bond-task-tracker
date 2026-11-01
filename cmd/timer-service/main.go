@@ -19,6 +19,8 @@ func main() {
 	dsn := config.MustGetEnv("DATABASE_URL")
 	port := config.GetEnvOrDefault("PORT", "8083")
 	taskServiceURL := config.MustGetEnv("TASK_SERVICE_URL")
+	workspaceServiceURL := config.MustGetEnv("WORKSPACE_SERVICE_URL")
+	projectServiceURL := config.MustGetEnv("PROJECT_SERVICE_URL")
 
 	db, err := dbx.Open(dsn)
 	if err != nil {
@@ -33,7 +35,9 @@ func main() {
 	}
 
 	taskClient := timer.NewTaskClient(taskServiceURL)
-	handler := timer.NewHandler(timer.NewService(timer.NewRepository(db), taskClient))
+	workspaceClient := timer.NewWorkspaceClient(workspaceServiceURL)
+	projectClient := timer.NewProjectClient(projectServiceURL)
+	handler := timer.NewHandler(timer.NewService(timer.NewRepository(db), taskClient, workspaceClient, projectClient))
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
